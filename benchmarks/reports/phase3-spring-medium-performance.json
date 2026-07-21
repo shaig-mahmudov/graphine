@@ -1,0 +1,45 @@
+{
+    "report_version":  1,
+    "generated_at":  "2026-07-21T19:31:31.8514484Z",
+    "environment":  {
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "rust":  "rustc 1.96.0 (ac68faa20 2026-05-25)"
+                    },
+    "corpus":  {
+                   "generator":  "benchmark-core generate-spring-medium",
+                   "controller_count":  100,
+                   "expected_route_count":  100,
+                   "file_count":  206,
+                   "source_lines":  206
+               },
+    "graph":  {
+                  "node_count":  913,
+                  "edge_count":  2418,
+                  "occurrence_count":  1401,
+                  "database_bytes":  4161536
+              },
+    "timing_ms":  {
+                      "end_to_end_analysis":  3951,
+                      "java_analysis":  1430,
+                      "spring_semantic_pass":  116,
+                      "protocol_serialization":  319,
+                      "rust_ingestion":  1212,
+                      "endpoint_context_preparation_p50":  17,
+                      "endpoint_context_preparation_p95":  23
+                  },
+    "memory_bytes":  {
+                         "peak_java_heap_observed":  37817120
+                     },
+    "capabilities":  {
+                         "java_semantics":  true,
+                         "spring_runtime_semantics":  false,
+                         "spring_static_semantics":  true
+                     },
+    "assumptions":  [
+                        "Generated Spring-shaped corpus uses canonical source annotation stubs and no external dependencies",
+                        "Endpoint-context preparation is approximated by a bounded two-hop route neighborhood because the Phase 4 endpoint tool is intentionally absent",
+                        "Query latency includes fresh STDIO process startup",
+                        "Results describe this environment only"
+                    ]
+}

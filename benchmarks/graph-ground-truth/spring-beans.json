@@ -1,0 +1,15 @@
+{"fixture":"spring-beans","expected":[
+{"question_id":"spring-beans-001","category":"bean-resolution","event":"edge","source":"constructor:dev.graphine.fixture.beans.CheckoutService#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:cardProcessor","kind":"SELECTED_BEAN"},
+{"question_id":"spring-beans-002","category":"bean-resolution","event":"edge","source":"constructor:dev.graphine.fixture.beans.WireCheckoutService#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:wireProcessor","kind":"SELECTED_BEAN"},
+{"question_id":"spring-beans-003","category":"bean-discovery","event":"node","stable_id":"bean:wireProcessor","kind":"BEAN"},
+{"question_id":"spring-beans-004","category":"bean-discovery","event":"node","stable_id":"bean:auditLabel","kind":"BEAN"},
+{"question_id":"spring-beans-004","category":"bean-discovery","event":"node","stable_id":"bean:conditionalProcessor","kind":"BEAN"},
+{"question_id":"spring-beans-006","category":"component-discovery","event":"node","stable_id":"type:dev.graphine.fixture.beans.CardProcessor","kind":"SPRING_COMPONENT"},
+{"question_id":"spring-beans-006","category":"component-discovery","event":"node","stable_id":"type:dev.graphine.fixture.beans.WireProcessor","kind":"SPRING_COMPONENT"},
+{"question_id":"spring-beans-007","category":"ambiguous-injection","event":"edge","source":"constructor:dev.graphine.fixture.beans.AmbiguousProcessorConsumer#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:cardProcessor","kind":"BEAN_CANDIDATE"},
+{"question_id":"spring-beans-007","category":"ambiguous-injection","event":"edge","source":"constructor:dev.graphine.fixture.beans.AmbiguousProcessorConsumer#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:wireProcessor","kind":"BEAN_CANDIDATE"},
+{"question_id":"spring-beans-007","category":"ambiguous-injection","event":"edge","source":"constructor:dev.graphine.fixture.beans.AmbiguousProcessorConsumer#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:conditionalProcessor","kind":"BEAN_CANDIDATE"},
+{"question_id":"spring-beans-009","category":"meta-stereotype","event":"node","stable_id":"type:dev.graphine.fixture.beans.MetaPaymentService","kind":"SPRING_COMPONENT"},
+{"question_id":"spring-beans-010","category":"configuration","event":"node","stable_id":"config:mail.api-key","kind":"CONFIG_PROPERTY"},
+{"question_id":"spring-beans-010","category":"configuration","event":"node","stable_id":"config:payments.token","kind":"CONFIG_PROPERTY"}
+],"forbidden":[{"question_id":"spring-beans-002","category":"bean-resolution","event":"edge","source":"constructor:dev.graphine.fixture.beans.WireCheckoutService#<init>(dev.graphine.fixture.beans.PaymentProcessor)","target":"bean:cardProcessor","kind":"SELECTED_BEAN"}],"unsupported_questions":[]}

@@ -1,0 +1,12 @@
+{"fixture":"spring-web","expected":[
+{"question_id":"spring-web-001","category":"route-composition","event":"node","stable_id":"route:POST:/api/v1/events","kind":"ROUTE"},
+{"question_id":"spring-web-001","category":"route-composition","event":"edge","source":"route:POST:/api/v1/events","target":"method:dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)","kind":"HANDLED_BY"},
+{"question_id":"spring-web-002","category":"route-composition","event":"node","stable_id":"route:GET:/api/v1/events/{id}","kind":"ROUTE"},
+{"question_id":"spring-web-003","category":"route-composition","event":"node","stable_id":"route:GET:/api/v1/events","kind":"ROUTE"},
+{"question_id":"spring-web-004","category":"route-composition","event":"node","stable_id":"route:DELETE:/api/v1/events/{id}","kind":"ROUTE"},
+{"question_id":"spring-web-006","category":"events","event":"edge","source":"method:dev.graphine.fixture.web.EventService#create(dev.graphine.fixture.web.CreateEventRequest)","target":"type:dev.graphine.fixture.web.EventCreated","kind":"PUBLISHES_EVENT"},
+{"question_id":"spring-web-006","category":"events","event":"edge","source":"method:dev.graphine.fixture.web.EventAuditListener#record(dev.graphine.fixture.web.EventCreated)","target":"type:dev.graphine.fixture.web.EventCreated","kind":"LISTENS_TO_EVENT"},
+{"question_id":"spring-web-013","category":"route-aliases","event":"node","stable_id":"route:GET:/events/{id}","kind":"ROUTE"},
+{"question_id":"spring-web-013","category":"route-aliases","event":"node","stable_id":"route:GET:/activities/{id}","kind":"ROUTE"},
+{"question_id":"spring-web-014","category":"route-conflicts","event":"diagnostic","kind":"DUPLICATE_ROUTE_MAPPING","symbol_text":"route:GET:/api/v1/events"}
+],"forbidden":[{"question_id":"spring-web-001","category":"route-composition","event":"edge","source":"route:POST:/api/v1/events","target":"method:dev.graphine.fixture.web.EventController#list()","kind":"HANDLED_BY"}],"unsupported_questions":[]}

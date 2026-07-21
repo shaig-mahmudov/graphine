@@ -1,0 +1,68 @@
+{
+  "report_version": 1,
+  "phase": 2,
+  "measured_at": "2026-07-21",
+  "environment": {
+    "os": "Windows",
+    "build_profile": "Rust debug and Java packaged worker",
+    "sampling": "single warmed engineering runs",
+    "worker_version_startup_ms": 133,
+    "peak_rust_memory_bytes": null,
+    "peak_rust_memory_note": "Not instrumented; no estimate is claimed."
+  },
+  "runs": [
+    {
+      "fixture": "java-core",
+      "shape": "small single-module",
+      "mode": "safe",
+      "files": 11,
+      "nodes": 60,
+      "edges": 118,
+      "classpath_resolution_ms": 0,
+      "parsing_ms": 785,
+      "serialization_ms": 52,
+      "worker_analysis_ms": 845,
+      "worker_round_trip_ms": 1396,
+      "rust_sqlite_ingestion_ms": 24,
+      "total_index_ms": 1420,
+      "peak_java_memory_bytes": 21994496
+    },
+    {
+      "fixture": "java-core",
+      "shape": "small single-module",
+      "mode": "trusted",
+      "files": 11,
+      "nodes": 60,
+      "edges": 118,
+      "classpath_resolution_ms": 5286,
+      "parsing_ms": 1192,
+      "serialization_ms": 70,
+      "worker_analysis_ms": 1273,
+      "worker_round_trip_ms": 7275,
+      "rust_sqlite_ingestion_ms": 29,
+      "total_index_ms": 7304,
+      "peak_java_memory_bytes": 16016032
+    },
+    {
+      "fixture": "java-multi",
+      "shape": "small basic multi-module",
+      "mode": "safe",
+      "files": 2,
+      "nodes": 10,
+      "edges": 16,
+      "classpath_resolution_ms": 0,
+      "parsing_ms": 598,
+      "serialization_ms": 20,
+      "worker_analysis_ms": 626,
+      "worker_round_trip_ms": 1125,
+      "rust_sqlite_ingestion_ms": 6,
+      "total_index_ms": 1131,
+      "peak_java_memory_bytes": 16238432
+    }
+  ],
+  "required_gap": {
+    "medium_open_source_or_generated_corpus": "not measured",
+    "reason": "No stable medium Maven fixture is checked into the repository; results are not fabricated."
+  },
+  "interpretation": "Startup and JVM warm-up dominate these tiny fixtures. Trusted classpath resolution dominates its run. Measurements are not service-level objectives."
+}

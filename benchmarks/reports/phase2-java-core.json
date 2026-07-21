@@ -1,0 +1,54 @@
+{
+  "report_version": 1,
+  "phase": 2,
+  "generated_at": "2026-07-21",
+  "analyzer": "graphine-analyzer 0.1.0 protocol 1 eclipse-jdt",
+  "fixture": "java-core",
+  "mode": "safe",
+  "methodology": {
+    "description": "Audited normalized graph facts and MCP symbol contexts against the checked-in java-core source and Phase 0 ground truth. Counts are unique graph facts, not natural-language answer scores.",
+    "external_nodes_excluded_from_declaration_metrics": true,
+    "implicit_constructors_excluded_from_source_location_metric": true
+  },
+  "analysis_summary": {
+    "files_discovered": 11,
+    "files_parsed": 11,
+    "files_failed": 0,
+    "bindings_resolved": 76,
+    "bindings_unresolved": 0,
+    "nodes_emitted": 60,
+    "edges_emitted": 118,
+    "status": "complete"
+  },
+  "accuracy": {
+    "type_declarations": {"true_positive": 13, "false_positive": 0, "expected": 13, "precision": 1.0, "recall": 1.0, "target_precision": 0.99, "target_met": true},
+    "method_signatures": {"true_positive": 19, "false_positive": 0, "expected": 19, "precision": 1.0, "recall": 1.0, "target_precision": 0.99, "target_met": true},
+    "direct_resolved_call_targets": {"true_positive": 18, "false_positive": 0, "expected_unique_edges": 18, "precision": 1.0, "recall": 1.0, "target_precision": 0.97, "target_recall": 0.9, "target_met": true},
+    "override_edges": {"true_positive": 6, "false_positive": 0, "expected": 6, "precision": 1.0, "recall": 1.0, "target_precision": 0.97, "target_met": true},
+    "source_locations": {"correct": 34, "audited": 34, "accuracy": 1.0, "target": 0.99, "target_met": true},
+    "unsupported_deterministic_resolutions": {"count": 0, "target": 0, "target_met": true},
+    "hidden_unresolved_bindings": {"within_discovered_standard_roots": 0, "target": 0, "target_met": true, "scope_note": "The nonstandard src/analysis-only benchmark source is not a supported Maven source root and is reported as a benchmark coverage gap."}
+  },
+  "phase0_java_question_fact_coverage": {
+    "fully_supported": 12,
+    "partially_supported": 1,
+    "not_supported": 3,
+    "total": 16,
+    "fully_supported_ratio": 0.75,
+    "fully_supported_ids": ["java-core-001", "java-core-002", "java-core-003", "java-core-004", "java-core-005", "java-core-006", "java-core-007", "java-core-008", "java-core-011", "java-core-012", "java-core-015", "java-core-016"],
+    "partial": [{"id": "java-core-013", "reason": "Method-reference target and lambda functional type are present, but exact lambda source text is not stored."}],
+    "gaps": [
+      {"id": "java-core-009", "reason": "Invocation-site generic return substitution is not stored."},
+      {"id": "java-core-010", "reason": "Record components are not emitted as dedicated component nodes."},
+      {"id": "java-core-014", "reason": "src/analysis-only is intentionally outside supported standard Maven roots; the separate java-unresolved fixture verifies visible missing-classpath diagnostics."}
+    ]
+  },
+  "unresolved_fixture_check": {
+    "fixture": "java-unresolved",
+    "expected_unresolved_calls": 1,
+    "persisted_diagnostics": 1,
+    "hidden": 0,
+    "diagnostic_kind": "UNRESOLVED_METHOD_CALL"
+  },
+  "claim_boundary": "This report measures graph-fact extraction on small checked-in fixtures. It does not claim Spring benchmark success or generalize to arbitrary Maven projects."
+}

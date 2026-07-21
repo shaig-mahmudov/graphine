@@ -360,6 +360,10 @@ impl<'a> QueryService<'a> {
                     "last_successful_activation_ms": status.last_successful_activation_ms,
                     "node_count": status.node_count,
                     "edge_count": status.edge_count,
+                    "diagnostic_count": status.diagnostic_count,
+                    "partial": status.partial,
+                    "analyzer_protocol_version": status.analyzer_protocol_version,
+                    "analysis_summary": status.analysis_summary,
                     "failure_summary": status.failure_summary,
                 }),
             )
@@ -759,6 +763,10 @@ mod tests {
             failure_summary: None,
             node_count: 1,
             edge_count: 0,
+            diagnostic_count: 0,
+            partial: false,
+            analyzer_protocol_version: None,
+            analysis_summary: None,
         }
     }
 }

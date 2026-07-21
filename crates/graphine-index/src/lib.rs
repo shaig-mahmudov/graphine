@@ -1,6 +1,7 @@
 use graphine_protocol::{
-    ANALYZER_PLACEHOLDER, Confidence, GenerationState, GraphineError, ProjectId, SCHEMA_VERSION,
-    StableId, SyntheticEdge, SyntheticGraph, SyntheticNode,
+    ANALYZER_PLACEHOLDER, AnalyzerDiagnostic, AnalyzerSummary, Confidence, GenerationState,
+    GraphineError, ProjectId, SCHEMA_VERSION, StableId, SyntheticEdge, SyntheticGraph,
+    SyntheticNode,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -100,6 +101,32 @@ CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(project_id, generation, tar
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(project_id, generation, kind);
 ";
 
+const MIGRATION_2: &str = r"
+ALTER TABLE project_generations ADD COLUMN analyzer_protocol_version INTEGER;
+ALTER TABLE project_generations ADD COLUMN analyzer_version TEXT;
+ALTER TABLE project_generations ADD COLUMN source_fingerprint TEXT;
+ALTER TABLE project_generations ADD COLUMN partial INTEGER NOT NULL DEFAULT 0 CHECK (partial IN (0,1));
+ALTER TABLE project_generations ADD COLUMN summary_json TEXT CHECK (summary_json IS NULL OR json_valid(summary_json));
+CREATE TABLE analyzer_diagnostics (
+    project_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    file_path TEXT,
+    start_line INTEGER,
+    end_line INTEGER,
+    symbol_text TEXT,
+    reason TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    PRIMARY KEY (project_id, generation, ordinal),
+    FOREIGN KEY (project_id, generation) REFERENCES project_generations(project_id, generation) ON DELETE CASCADE,
+    CHECK ((file_path IS NULL AND start_line IS NULL AND end_line IS NULL) OR
+           (file_path IS NOT NULL AND start_line > 0 AND end_line >= start_line))
+);
+CREATE INDEX idx_diagnostics_project_generation ON analyzer_diagnostics(project_id, generation);
+UPDATE projects SET schema_version=2;
+";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRecord {
     pub id: ProjectId,
@@ -121,6 +148,10 @@ pub struct IndexStatus {
     pub failure_summary: Option<String>,
     pub node_count: u64,
     pub edge_count: u64,
+    pub diagnostic_count: u64,
+    pub partial: bool,
+    pub analyzer_protocol_version: Option<u32>,
+    pub analysis_summary: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +189,16 @@ pub struct GraphSummary {
     pub modules: Vec<String>,
     pub packages: Vec<String>,
     pub unresolved_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalysisIngestion {
+    pub protocol_version: u32,
+    pub analyzer_version: String,
+    pub source_fingerprint: String,
+    pub partial: bool,
+    pub summary: AnalyzerSummary,
+    pub diagnostics: Vec<AnalyzerDiagnostic>,
 }
 
 pub struct Database {
@@ -209,9 +250,25 @@ impl Database {
         transaction
             .execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES (?1, ?2)",
-                params![SCHEMA_VERSION, now_ms()],
+                params![1, now_ms()],
             )
             .map_err(db_error)?;
+        let has_version_2: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=2)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !has_version_2 {
+            transaction.execute_batch(MIGRATION_2).map_err(db_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (2, ?1)",
+                    [now_ms()],
+                )
+                .map_err(db_error)?;
+        }
         transaction.commit().map_err(db_error)
     }
 
@@ -430,7 +487,32 @@ impl Database {
         let project = self.project_by_ref(project_ref)?;
         let generation = self.begin_generation(&project.id)?;
         let result = validate_synthetic(&project.canonical_root, graph)
-            .and_then(|()| self.write_and_activate(&project, generation, graph));
+            .and_then(|()| self.write_and_activate(&project, generation, graph, None));
+        if let Err(error) = &result {
+            let _ = self.fail_generation(&project.id, generation, error.code());
+        }
+        result.map(|()| generation)
+    }
+
+    /// Loads a validated analyzer graph, diagnostics, and analyzer metadata atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, path, generation, or database error. Failed loads are recorded.
+    pub fn load_analysis(
+        &mut self,
+        project_ref: &str,
+        graph: &SyntheticGraph,
+        analysis: &AnalysisIngestion,
+    ) -> Result<i64, GraphineError> {
+        let project = self.project_by_ref(project_ref)?;
+        let generation = self.begin_generation(&project.id)?;
+        let result = validate_synthetic(&project.canonical_root, graph).and_then(|()| {
+            for diagnostic in &analysis.diagnostics {
+                validate_diagnostic(&project.canonical_root, diagnostic)?;
+            }
+            self.write_and_activate(&project, generation, graph, Some(analysis))
+        });
         if let Err(error) = &result {
             let _ = self.fail_generation(&project.id, generation, error.code());
         }
@@ -442,6 +524,7 @@ impl Database {
         project: &ProjectRecord,
         generation: i64,
         graph: &SyntheticGraph,
+        analysis: Option<&AnalysisIngestion>,
     ) -> Result<(), GraphineError> {
         let transaction = self.connection.transaction().map_err(db_error)?;
         for node in &graph.nodes {
@@ -449,6 +532,9 @@ impl Database {
         }
         for edge in &graph.edges {
             insert_edge(&transaction, &project.id, generation, edge)?;
+        }
+        if let Some(analysis) = analysis {
+            insert_analysis_metadata(&transaction, &project.id, generation, analysis)?;
         }
         let node_count: i64 = transaction
             .query_row(
@@ -499,17 +585,24 @@ impl Database {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .map_err(db_error)?;
-        let (node_count, edge_count) = if let Some(generation) = active_generation {
+        let (node_count, edge_count, diagnostic_count, partial, protocol, summary) = if let Some(
+            generation,
+        ) =
+            active_generation
+        {
             self.connection
                 .query_row(
                     "SELECT (SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2),
-                            (SELECT COUNT(*) FROM edges WHERE project_id=?1 AND generation=?2)",
+                            (SELECT COUNT(*) FROM edges WHERE project_id=?1 AND generation=?2),
+                            (SELECT COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2),
+                            partial, analyzer_protocol_version, summary_json
+                     FROM project_generations WHERE project_id=?1 AND generation=?2",
                     params![project.id.as_str(), generation],
-                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, bool>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<String>>(5)?)),
                 )
                 .map_err(db_error)?
         } else {
-            (0, 0)
+            (0, 0, 0, false, None, None)
         };
         Ok(IndexStatus {
             project,
@@ -520,7 +613,44 @@ impl Database {
             failure_summary: failure,
             node_count,
             edge_count,
+            diagnostic_count,
+            partial,
+            analyzer_protocol_version: protocol,
+            analysis_summary: summary
+                .map(|value| serde_json::from_str(&value).map_err(|_| GraphineError::Database))
+                .transpose()?,
         })
+    }
+
+    /// Returns diagnostics from the active generation in stable ordinal order.
+    ///
+    /// # Errors
+    ///
+    /// Returns project, index, or database errors.
+    pub fn diagnostics(&self, reference: &str) -> Result<Vec<AnalyzerDiagnostic>, GraphineError> {
+        let status = self.ready_status(reference)?;
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT kind,file_path,start_line,end_line,symbol_text,reason,severity FROM analyzer_diagnostics
+             WHERE project_id=?1 AND generation=?2 ORDER BY ordinal"
+        ).map_err(db_error)?;
+        statement
+            .query_map(params![status.project.id.as_str(), generation], |row| {
+                Ok(AnalyzerDiagnostic {
+                    kind: row.get(0)?,
+                    file_path: row.get(1)?,
+                    start_line: row.get(2)?,
+                    end_line: row.get(3)?,
+                    symbol_text: row.get(4)?,
+                    reason: row.get(5)?,
+                    severity: row.get(6)?,
+                })
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)
     }
 
     /// Marks the active index stale without deleting it.
@@ -564,7 +694,8 @@ impl Database {
         let modules = distinct_strings(&self.connection, "module_name", &status, generation)?;
         let packages = distinct_strings(&self.connection, "package_name", &status, generation)?;
         let unresolved = self.connection.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND unresolved_json <> '[]'",
+            "SELECT (SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND unresolved_json <> '[]') +
+                    (SELECT COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2)",
             params![status.project.id.as_str(), generation],
             |row| row.get(0),
         ).map_err(db_error)?;
@@ -744,6 +875,43 @@ fn insert_node(
     Ok(())
 }
 
+fn insert_analysis_metadata(
+    transaction: &Transaction<'_>,
+    project: &ProjectId,
+    generation: i64,
+    analysis: &AnalysisIngestion,
+) -> Result<(), GraphineError> {
+    let summary = serde_json::to_string(&analysis.summary).map_err(|_| GraphineError::Internal)?;
+    transaction
+        .execute(
+            "UPDATE project_generations SET analyzer_protocol_version=?3, analyzer_version=?4,
+         source_fingerprint=?5, partial=?6, summary_json=?7 WHERE project_id=?1 AND generation=?2",
+            params![
+                project.as_str(),
+                generation,
+                analysis.protocol_version,
+                analysis.analyzer_version,
+                analysis.source_fingerprint,
+                analysis.partial,
+                summary
+            ],
+        )
+        .map_err(db_error)?;
+    transaction.execute(
+        "UPDATE projects SET source_fingerprint=?2, analyzer_version=?3, schema_version=?4 WHERE project_id=?1",
+        params![project.as_str(), analysis.source_fingerprint, analysis.analyzer_version, SCHEMA_VERSION],
+    ).map_err(db_error)?;
+    for (ordinal, diagnostic) in analysis.diagnostics.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO analyzer_diagnostics(project_id,generation,ordinal,kind,file_path,start_line,end_line,symbol_text,reason,severity)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![project.as_str(), generation, ordinal, diagnostic.kind, diagnostic.file_path,
+                diagnostic.start_line, diagnostic.end_line, diagnostic.symbol_text, diagnostic.reason, diagnostic.severity],
+        ).map_err(db_error)?;
+    }
+    Ok(())
+}
+
 fn insert_edge(
     transaction: &Transaction<'_>,
     project: &ProjectId,
@@ -843,6 +1011,22 @@ fn validate_synthetic(root: &Path, graph: &SyntheticGraph) -> Result<(), Graphin
         }
     }
     Ok(())
+}
+
+fn validate_diagnostic(root: &Path, diagnostic: &AnalyzerDiagnostic) -> Result<(), GraphineError> {
+    match (
+        &diagnostic.file_path,
+        diagnostic.start_line,
+        diagnostic.end_line,
+    ) {
+        (None, None, None) => Ok(()),
+        (Some(path), Some(start), Some(end)) if start > 0 && end >= start => {
+            validate_evidence_path(root, path).map(|_| ())
+        }
+        _ => Err(GraphineError::InvalidArgument(
+            "invalid diagnostic range".to_owned(),
+        )),
+    }
 }
 
 fn derive_simple_name(qualified: &str) -> String {
@@ -1012,8 +1196,10 @@ mod tests {
             "nodes",
             "edges",
             "evidence",
+            "analyzer_diagnostics",
             "idx_nodes_stable_id",
             "idx_edges_source",
+            "idx_diagnostics_project_generation",
         ] {
             let exists: bool = database
                 .connection
@@ -1054,6 +1240,62 @@ mod tests {
         assert_eq!(status.state, GenerationState::Failed);
         assert_eq!(status.node_count, 1);
         drop(project);
+    }
+
+    #[test]
+    fn analyzer_metadata_and_diagnostics_activate_atomically() {
+        let root = temp_project("analysis-ingestion");
+        let mut database = Database::open_in_memory().unwrap();
+        database
+            .register_project(&root, Some("analysis"), &[])
+            .unwrap();
+        let diagnostic = AnalyzerDiagnostic {
+            kind: "unresolved_binding".to_owned(),
+            file_path: Some("src/Sample.java".to_owned()),
+            start_line: Some(1),
+            end_line: Some(1),
+            symbol_text: Some("Missing".to_owned()),
+            reason: "type binding was not resolved".to_owned(),
+            severity: "warning".to_owned(),
+        };
+        let ingestion = AnalysisIngestion {
+            protocol_version: 1,
+            analyzer_version: "test-analyzer".to_owned(),
+            source_fingerprint: "fixture-fingerprint".to_owned(),
+            partial: true,
+            summary: AnalyzerSummary {
+                files_discovered: 1,
+                files_parsed: 1,
+                nodes_emitted: 1,
+                status: "partial".to_owned(),
+                ..AnalyzerSummary::default()
+            },
+            diagnostics: vec![diagnostic.clone()],
+        };
+        let generation = database
+            .load_analysis("analysis", &graph("analysis"), &ingestion)
+            .unwrap();
+        let status = database.status("analysis").unwrap();
+        assert_eq!(status.active_generation, Some(generation));
+        assert_eq!(status.analyzer_protocol_version, Some(1));
+        assert_eq!(status.diagnostic_count, 1);
+        assert!(status.partial);
+        assert_eq!(
+            status.analysis_summary,
+            Some(serde_json::to_value(&ingestion.summary).unwrap())
+        );
+        assert_eq!(database.diagnostics("analysis").unwrap(), vec![diagnostic]);
+
+        let mut invalid = ingestion;
+        invalid.diagnostics[0].file_path = Some("../outside.java".to_owned());
+        assert!(
+            database
+                .load_analysis("analysis", &graph("analysis"), &invalid)
+                .is_err()
+        );
+        let after_failure = database.status("analysis").unwrap();
+        assert_eq!(after_failure.active_generation, Some(generation));
+        assert_eq!(database.diagnostics("analysis").unwrap().len(), 1);
     }
 
     #[test]

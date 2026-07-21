@@ -7,7 +7,8 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
+pub const ANALYZER_PROTOCOL_VERSION: u32 = 1;
 pub const ANALYZER_PLACEHOLDER: &str = "synthetic-phase-1";
 pub const PROJECT_NAMESPACE: Uuid = Uuid::from_u128(0x2bbd_0781_53ac_4e83_9e4b_87ec_ad76_bf89);
 
@@ -103,7 +104,7 @@ impl StableId {
             "project" | "module" | "package" | "type" | "bean" | "entity" => {
                 !body.trim().is_empty()
             }
-            "method" => {
+            "method" | "constructor" => {
                 let Some((owner, method)) = body.split_once('#') else {
                     return Err(GraphineError::InvalidStableId(value));
                 };
@@ -111,6 +112,7 @@ impl StableId {
                     && method.contains('(')
                     && method.ends_with(')')
                     && !method.starts_with('(')
+                    && (kind != "constructor" || method.starts_with("<init>("))
             }
             "field" => body
                 .split_once('#')
@@ -229,7 +231,7 @@ pub struct SyntheticEdge {
     pub metadata: Value,
 }
 
-/// Reserved Phase 2 analyzer handshake. Phase 1 never launches an analyzer.
+/// Phase 2 analyzer protocol version shared by the Rust supervisor and JVM worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzerHello {
     pub protocol_version: u32,
@@ -237,12 +239,135 @@ pub struct AnalyzerHello {
     pub capabilities: Vec<String>,
 }
 
-/// Reserved Phase 2 request boundary. Paths remain repository-relative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyzerMode {
+    Safe,
+    Trusted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalyzerRequest {
-    pub project_id: ProjectId,
-    pub generation: i64,
-    pub changed_paths: Vec<String>,
+pub struct AnalyzerOptions {
+    pub include_method_bodies: bool,
+    pub include_field_access: bool,
+    pub include_tests: bool,
+    #[serde(default)]
+    pub explicit_classpath: Vec<String>,
+}
+
+impl Default for AnalyzerOptions {
+    fn default() -> Self {
+        Self {
+            include_method_bodies: true,
+            include_field_access: true,
+            include_tests: true,
+            explicit_classpath: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyzeProjectRequest {
+    pub protocol_version: u32,
+    pub request_id: String,
+    pub operation: String,
+    pub project_root: PathBuf,
+    pub mode: AnalyzerMode,
+    pub source_sets: Vec<String>,
+    pub options: AnalyzerOptions,
+    pub maven_executable: PathBuf,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnalyzerEvent {
+    AnalysisStarted {
+        protocol_version: u32,
+        request_id: String,
+        analyzer_version: String,
+    },
+    ProjectMetadata {
+        fingerprint: String,
+        java_release: String,
+        classpath_resolution_ms: u64,
+        modules: Vec<String>,
+    },
+    ModuleDiscovered {
+        name: String,
+        root: String,
+        source_roots: Vec<String>,
+    },
+    Node {
+        #[serde(flatten)]
+        node: SyntheticNode,
+    },
+    Edge {
+        source: String,
+        target: String,
+        kind: String,
+        confidence: Confidence,
+        provenance: String,
+        #[serde(default = "empty_object")]
+        metadata: Value,
+    },
+    Diagnostic {
+        diagnostic: AnalyzerDiagnostic,
+    },
+    AnalysisSummary {
+        summary: AnalyzerSummary,
+    },
+    AnalysisFailed {
+        code: String,
+        message: String,
+    },
+    AnalysisCompleted {
+        status: AnalysisCompletionStatus,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyzerDiagnostic {
+    pub kind: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    #[serde(default)]
+    pub end_line: Option<u32>,
+    #[serde(default)]
+    pub symbol_text: Option<String>,
+    pub reason: String,
+    #[serde(default = "default_warning_severity")]
+    pub severity: String,
+}
+
+fn default_warning_severity() -> String {
+    "warning".to_owned()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyzerSummary {
+    pub files_discovered: u64,
+    pub files_parsed: u64,
+    pub files_failed: u64,
+    pub bindings_resolved: u64,
+    pub bindings_unresolved: u64,
+    pub nodes_emitted: u64,
+    pub edges_emitted: u64,
+    pub duration_ms: u64,
+    pub classpath_resolution_ms: u64,
+    pub parsing_ms: u64,
+    pub serialization_ms: u64,
+    pub peak_java_memory_bytes: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisCompletionStatus {
+    Complete,
+    Partial,
 }
 
 fn empty_object() -> Value {
@@ -288,6 +413,12 @@ pub struct GraphineConfig {
     pub allowed_repository_roots: Vec<PathBuf>,
     pub sqlite_timeout_ms: u64,
     pub mcp_transport: String,
+    pub analyzer_jar: Option<PathBuf>,
+    pub java_executable: PathBuf,
+    pub maven_executable: PathBuf,
+    pub analyzer_timeout_ms: u64,
+    pub analyzer_output_limit_bytes: usize,
+    pub allow_partial_activation: bool,
 }
 
 impl Default for GraphineConfig {
@@ -302,6 +433,12 @@ impl Default for GraphineConfig {
             allowed_repository_roots: Vec::new(),
             sqlite_timeout_ms: 5_000,
             mcp_transport: "stdio".to_owned(),
+            analyzer_jar: None,
+            java_executable: PathBuf::from("java"),
+            maven_executable: PathBuf::from(if cfg!(windows) { "mvn.cmd" } else { "mvn" }),
+            analyzer_timeout_ms: 120_000,
+            analyzer_output_limit_bytes: 64 * 1024 * 1024,
+            allow_partial_activation: false,
         }
     }
 }
@@ -335,6 +472,8 @@ impl GraphineConfig {
             || self.maximum_result_count == 0
             || self.sqlite_timeout_ms == 0
             || self.mcp_transport != "stdio"
+            || self.analyzer_timeout_ms == 0
+            || self.analyzer_output_limit_bytes < 1024 * 1024
         {
             return Err(GraphineError::InvalidArgument(
                 "unsafe or unsupported configuration".to_owned(),
@@ -372,6 +511,18 @@ pub enum GraphineError {
     Database,
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    #[error("analyzer worker is unavailable")]
+    AnalyzerUnavailable,
+    #[error("analyzer protocol failed validation")]
+    AnalyzerProtocol,
+    #[error("analyzer timed out")]
+    AnalyzerTimeout,
+    #[error("analyzer process failed")]
+    AnalyzerFailed,
+    #[error("partial analysis activation is disabled")]
+    AnalysisPartial,
+    #[error("analysis was cancelled")]
+    AnalysisCancelled,
     #[error("internal error")]
     Internal,
 }
@@ -393,6 +544,12 @@ impl GraphineError {
             Self::GenerationConflict => "generation_conflict",
             Self::Database => "database_error",
             Self::InvalidArgument(_) => "invalid_argument",
+            Self::AnalyzerUnavailable => "analyzer_unavailable",
+            Self::AnalyzerProtocol => "analyzer_protocol_error",
+            Self::AnalyzerTimeout => "analyzer_timeout",
+            Self::AnalyzerFailed => "analyzer_failed",
+            Self::AnalysisPartial => "analysis_partial",
+            Self::AnalysisCancelled => "analysis_cancelled",
             Self::Internal => "internal_error",
         }
     }
@@ -412,6 +569,7 @@ mod tests {
         let valid = [
             "type:example.Event",
             "method:example.EventService#create(java.lang.String)",
+            "constructor:example.EventService#<init>(example.Repository)",
             "field:example.Event#name",
             "route:POST:/api/events",
             "bean:eventService",

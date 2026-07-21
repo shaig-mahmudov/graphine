@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
+use graphine_analyzer_client::{AnalyzerClient, CancellationToken};
 use graphine_index::Database;
 use graphine_mcp::{McpServer, run_stdio};
-use graphine_protocol::{GraphineConfig, SyntheticGraph};
+use graphine_protocol::{AnalyzerMode, GraphineConfig, SyntheticGraph};
 use serde_json::json;
 use std::fs;
 use std::io;
@@ -56,12 +57,48 @@ enum Command {
     },
     /// Run the MCP server over STDIO.
     Serve,
+    /// Explicitly analyze a registered Maven project with Eclipse JDT.
+    Analyze {
+        project: String,
+        #[arg(long, value_enum, default_value_t = CliAnalyzerMode::Safe)]
+        mode: CliAnalyzerMode,
+        #[arg(long)]
+        allow_partial: bool,
+    },
+    /// Inspect the standalone analyzer worker.
+    Analyzer {
+        #[command(subcommand)]
+        command: AnalyzerCommand,
+    },
+    /// Show diagnostics persisted for the active generation.
+    Diagnostics { project: String },
 }
 
 #[derive(Debug, Subcommand)]
 enum DbCommand {
     /// Create the database and apply all migrations.
     Migrate,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliAnalyzerMode {
+    Safe,
+    Trusted,
+}
+
+impl From<CliAnalyzerMode> for AnalyzerMode {
+    fn from(value: CliAnalyzerMode) -> Self {
+        match value {
+            CliAnalyzerMode::Safe => Self::Safe,
+            CliAnalyzerMode::Trusted => Self::Trusted,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum AnalyzerCommand {
+    Doctor,
+    Version,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -123,6 +160,10 @@ fn main() -> Result<()> {
                 "last_successful_activation_ms": status.last_successful_activation_ms,
                 "node_count": status.node_count,
                 "edge_count": status.edge_count,
+                "diagnostic_count": status.diagnostic_count,
+                "partial": status.partial,
+                "analyzer_protocol_version": status.analyzer_protocol_version,
+                "analysis_summary": status.analysis_summary,
                 "failure_summary": status.failure_summary,
             }))?;
         }
@@ -173,8 +214,53 @@ fn main() -> Result<()> {
             let stdout = io::stdout();
             run_stdio(&server, stdin.lock(), stdout.lock())?;
         }
+        Command::Analyze {
+            project,
+            mode,
+            allow_partial,
+        } => {
+            let mut database = Database::open(&database_path, config.sqlite_timeout_ms)?;
+            let client = AnalyzerClient::from_config(&config, workspace_root());
+            let outcome = client.analyze_and_ingest(
+                &mut database,
+                &project,
+                mode.into(),
+                allow_partial || config.allow_partial_activation,
+                &CancellationToken::default(),
+            )?;
+            print_json(&json!({
+                "project": project,
+                "generation": outcome.generation,
+                "analyzer_version": outcome.analyzer_version,
+                "partial": outcome.partial,
+                "diagnostics": outcome.diagnostics,
+                "worker_round_trip_ms": outcome.worker_round_trip_ms,
+                "ingestion_ms": outcome.ingestion_ms,
+                "summary": outcome.summary,
+            }))?;
+        }
+        Command::Analyzer { command } => {
+            let client = AnalyzerClient::from_config(&config, workspace_root());
+            let version = client.version()?;
+            match command {
+                AnalyzerCommand::Doctor => print_json(&json!({"status":"ok","worker":version,
+                    "jar": config.analyzer_jar.clone().unwrap_or_else(|| workspace_root().join("analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar"))}))?,
+                AnalyzerCommand::Version => print_json(&json!({"worker":version}))?,
+            }
+        }
+        Command::Diagnostics { project } => {
+            let database = Database::open(&database_path, config.sqlite_timeout_ms)?;
+            print_json(&json!({"project":project,"diagnostics":database.diagnostics(&project)?}))?;
+        }
     }
     Ok(())
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("graphine-cli must live at crates/graphine-cli")
 }
 
 fn init_tracing(level: &str) -> Result<()> {

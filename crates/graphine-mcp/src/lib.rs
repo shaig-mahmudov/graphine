@@ -156,7 +156,7 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": protocol_version,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "graphine", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "Graphine Phase 1 serves synthetic local graph facts; Java analysis is not implemented."
+        "instructions": "Graphine serves the active local Java graph. Analysis is explicit; MCP reads never execute Maven or trigger indexing. Compiler-resolved relationships include dispatch metadata, while unresolved bindings remain diagnostics."
     })
 }
 

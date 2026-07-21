@@ -1,0 +1,19 @@
+[package]
+name = "graphine-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "STDIO MCP server adapter for Graphine"
+
+[dependencies]
+graphine-index = { path = "../graphine-index" }
+graphine-protocol = { path = "../graphine-protocol" }
+graphine-query = { path = "../graphine-query" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
+

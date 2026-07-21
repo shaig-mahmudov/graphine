@@ -1,0 +1,25 @@
+[package]
+name = "graphine-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Graphine local CLI and MCP server entry point"
+
+[[bin]]
+name = "graphine"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+graphine-index = { path = "../graphine-index" }
+graphine-mcp = { path = "../graphine-mcp" }
+graphine-protocol = { path = "../graphine-protocol" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+

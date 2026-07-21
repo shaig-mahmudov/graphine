@@ -15,7 +15,7 @@ analysis_summary
 analysis_completed
 ```
 
-`analysis_started` echoes the request ID and declares the worker version. Project metadata includes the source fingerprint, release, classpath timing, and module list. Nodes use the public stable-ID grammar and repository-relative source ranges. Edges carry source/target IDs, kind, confidence, provenance, and an object-valued metadata field. Diagnostics are structured unresolved or parse facts rather than synthetic deterministic edges.
+`analysis_started` echoes the request ID and declares the worker version. Project metadata includes the source fingerprint, release, classpath timing, and module list. Nodes use the public stable-ID grammar and repository-relative source ranges. Edges carry source/target IDs, kind, confidence, provenance, object-valued aggregate metadata, and a backward-compatible `occurrences` array. The analyzer emits one logical edge and retains every method/constructor call, field access, and useful annotation site as a repository-relative occurrence. Diagnostics are structured unresolved or parse facts rather than synthetic deterministic edges.
 
 `analysis_summary` reports discovered/parsed/failed files, resolved/unresolved binding counts, node/edge counts, classpath/parsing/serialization/total time, peak Java heap observation, and complete/partial status. `analysis_completed` is required. `analysis_failed` terminates a request without graph activation.
 

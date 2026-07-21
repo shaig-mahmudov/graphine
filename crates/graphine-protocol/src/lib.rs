@@ -7,7 +7,7 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 pub const ANALYZER_PROTOCOL_VERSION: u32 = 1;
 pub const ANALYZER_PLACEHOLDER: &str = "synthetic-phase-1";
 pub const PROJECT_NAMESPACE: Uuid = Uuid::from_u128(0x2bbd_0781_53ac_4e83_9e4b_87ec_ad76_bf89);
@@ -229,6 +229,17 @@ pub struct SyntheticEdge {
     pub provenance: String,
     #[serde(default = "empty_object")]
     pub metadata: Value,
+    #[serde(default)]
+    pub occurrences: Vec<EdgeOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeOccurrence {
+    pub file_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    #[serde(default = "empty_object")]
+    pub metadata: Value,
 }
 
 /// Phase 2 analyzer protocol version shared by the Rust supervisor and JVM worker.
@@ -310,6 +321,8 @@ pub enum AnalyzerEvent {
         provenance: String,
         #[serde(default = "empty_object")]
         metadata: Value,
+        #[serde(default)]
+        occurrences: Vec<EdgeOccurrence>,
     },
     Diagnostic {
         diagnostic: AnalyzerDiagnostic,
@@ -379,13 +392,41 @@ pub struct ResponseEnvelope {
     pub project: String,
     pub generation: Option<i64>,
     pub stale: bool,
+    pub partial: bool,
+    pub complete: bool,
     pub summary: Value,
     pub facts: Vec<Value>,
     pub unresolved: Vec<String>,
     pub ambiguities: Vec<String>,
+    pub uncertainty: UncertaintyState,
     pub evidence_refs: Vec<EvidenceRef>,
     pub pagination: Pagination,
     pub budget: Budget,
+    pub truncation: TruncationState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UncertaintyState {
+    pub unresolved_count: u64,
+    pub ambiguity_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambiguities_truncated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TruncationState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambiguities_truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_truncated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,18 +4,35 @@ use graphine_query::QueryService;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{error, info_span, warn};
 
 pub struct McpServer {
     database: Database,
     config: GraphineConfig,
+    lifecycle: Mutex<Lifecycle>,
+}
+
+const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    New,
+    AwaitingInitialized,
+    Ready,
+    ShuttingDown,
 }
 
 impl McpServer {
     #[must_use]
     pub const fn new(database: Database, config: GraphineConfig) -> Self {
-        Self { database, config }
+        Self {
+            database,
+            config,
+            lifecycle: Mutex::new(Lifecycle::New),
+        }
     }
 
     /// Handles one JSON-RPC request or notification.
@@ -25,36 +42,98 @@ impl McpServer {
     /// This method maps operational errors into JSON-RPC responses and does not expose them.
     #[allow(clippy::needless_pass_by_value)]
     pub fn handle_value(&self, request: Value) -> Option<Value> {
+        if !request.is_object() || request.get("jsonrpc") != Some(&Value::String("2.0".to_owned()))
+        {
+            return Some(rpc_error(Value::Null, -32600, "invalid request", None));
+        }
         let id = request.get("id").cloned();
         let method = request.get("method").and_then(Value::as_str);
         if id.is_none() {
-            if matches!(
-                method,
-                Some("notifications/cancelled" | "notifications/initialized")
-            ) {
-                return None;
+            match method {
+                Some("notifications/initialized") => {
+                    let mut lifecycle = self.lifecycle.lock().ok()?;
+                    if *lifecycle == Lifecycle::AwaitingInitialized {
+                        *lifecycle = Lifecycle::Ready;
+                    }
+                    return None;
+                }
+                Some("notifications/cancelled") => {
+                    // Serial STDIO processing cannot interrupt an active call. Cancellation is
+                    // deliberately not advertised and late/unknown notifications are ignored.
+                    return None;
+                }
+                Some("exit") => return None,
+                _ => {}
             }
             warn!(?method, "ignored MCP notification");
             return None;
         }
         let id = id.unwrap_or(Value::Null);
+        if !matches!(id, Value::String(_) | Value::Number(_)) {
+            return Some(rpc_error(Value::Null, -32600, "invalid request ID", None));
+        }
         let Some(method) = method else {
             return Some(rpc_error(id, -32600, "invalid request", None));
         };
         let span = info_span!("mcp_request", request_name = method);
         let _guard = span.enter();
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        if !params.is_object() {
+            return Some(rpc_error(id, -32602, "params must be an object", None));
+        }
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .map_or(Lifecycle::ShuttingDown, |value| *value);
+        if method != "initialize" && method != "ping" && lifecycle != Lifecycle::Ready {
+            return Some(rpc_error(id, -32002, "server is not initialized", None));
+        }
         let result = match method {
-            "initialize" => Ok(initialize_result(&params)),
+            "initialize" => self.initialize(&params),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
             "tools/call" => self.call_tool(&params),
+            "shutdown" => {
+                if let Ok(mut lifecycle) = self.lifecycle.lock() {
+                    *lifecycle = Lifecycle::ShuttingDown;
+                }
+                Ok(Value::Null)
+            }
             _ => return Some(rpc_error(id, -32601, "method not found", None)),
         };
         Some(match result {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(error) => rpc_error(id, -32602, &error.to_string(), Some(error.safe_data())),
         })
+    }
+
+    fn initialize(&self, params: &Value) -> Result<Value, GraphineError> {
+        let requested = params
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                GraphineError::InvalidArgument("protocolVersion is required".to_owned())
+            })?;
+        if !params.get("capabilities").is_some_and(Value::is_object)
+            || !params.get("clientInfo").is_some_and(Value::is_object)
+        {
+            return Err(GraphineError::InvalidArgument(
+                "capabilities and clientInfo are required".to_owned(),
+            ));
+        }
+        let mut lifecycle = self.lifecycle.lock().map_err(|_| GraphineError::Internal)?;
+        if *lifecycle != Lifecycle::New {
+            return Err(GraphineError::InvalidArgument(
+                "initialize may only be called once".to_owned(),
+            ));
+        }
+        *lifecycle = Lifecycle::AwaitingInitialized;
+        let negotiated = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
+            requested
+        } else {
+            LATEST_PROTOCOL_VERSION
+        };
+        Ok(initialize_result(negotiated))
     }
 
     fn call_tool(&self, params: &Value) -> Result<Value, GraphineError> {
@@ -126,17 +205,14 @@ pub fn run_stdio<R: BufRead, W: Write>(
                 continue;
             }
         };
-        if request.get("method").and_then(Value::as_str) == Some("shutdown") {
-            let id = request.get("id").cloned().unwrap_or(Value::Null);
-            serde_json::to_writer(&mut output, &json!({"jsonrpc":"2.0","id":id,"result":{}}))?;
-            writeln!(output)?;
-            output.flush()?;
-            break;
-        }
+        let exit = request.get("method").and_then(Value::as_str) == Some("exit");
         if let Some(response) = server.handle_value(request) {
             serde_json::to_writer(&mut output, &response)?;
             writeln!(output)?;
             output.flush()?;
+        }
+        if exit {
+            break;
         }
     }
     Ok(())
@@ -147,11 +223,7 @@ fn decode<T: DeserializeOwned>(value: Value) -> Result<T, GraphineError> {
         .map_err(|error| GraphineError::InvalidArgument(format!("malformed arguments: {error}")))
 }
 
-fn initialize_result(params: &Value) -> Value {
-    let protocol_version = params
-        .get("protocolVersion")
-        .and_then(Value::as_str)
-        .unwrap_or("2025-06-18");
+fn initialize_result(protocol_version: &str) -> Value {
     json!({
         "protocolVersion": protocol_version,
         "capabilities": {"tools": {"listChanged": false}},
@@ -195,7 +267,7 @@ fn tool_definitions() -> Vec<Value> {
             "Direct inbound and outbound symbol context",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","stable_id"],
-                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
@@ -275,6 +347,7 @@ mod tests {
             confidence: Confidence::CompilerResolved,
             provenance: "test".to_owned(),
             metadata: json!({}),
+            occurrences: Vec::new(),
         }];
         database
             .load_synthetic(
@@ -294,17 +367,42 @@ mod tests {
         json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
     }
 
+    fn initialize_params(version: &str) -> Value {
+        json!({
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "graphine-test", "version": "1"}
+        })
+    }
+
+    fn initialize(server: &McpServer) {
+        let response = server
+            .handle_value(request(
+                999,
+                "initialize",
+                initialize_params(LATEST_PROTOCOL_VERSION),
+            ))
+            .unwrap();
+        assert_eq!(
+            response["result"]["protocolVersion"],
+            LATEST_PROTOCOL_VERSION
+        );
+        assert!(
+            server
+                .handle_value(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+                .is_none()
+        );
+    }
+
     #[test]
     fn initialization_and_tool_discovery_are_deterministic() {
         let server = server();
         let init = server
-            .handle_value(request(
-                1,
-                "initialize",
-                json!({"protocolVersion":"2025-06-18"}),
-            ))
+            .handle_value(request(1, "initialize", initialize_params("2025-06-18")))
             .unwrap();
         assert_eq!(init["result"]["serverInfo"]["name"], "graphine");
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+        server.handle_value(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
         let first = server
             .handle_value(request(2, "tools/list", json!({})))
             .unwrap();
@@ -313,6 +411,13 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 5);
+        let context_schema = first["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "get_symbol_context")
+            .unwrap();
+        assert!(context_schema["inputSchema"]["properties"]["cursor"].is_object());
         let call = request(
             3,
             "tools/call",
@@ -322,8 +427,51 @@ mod tests {
     }
 
     #[test]
+    fn symbol_context_cursor_is_accepted_and_bound_to_symbol_and_generation() {
+        let mut server = server();
+        initialize(&server);
+        let first = server.handle_value(request(1,"tools/call",json!({"name":"get_symbol_context","arguments":{"project":"mcp-fixture","stable_id":"type:example.Controller","token_budget":128}}))).unwrap();
+        let cursor = first["result"]["structuredContent"]["pagination"]["cursor"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let resumed = server.handle_value(request(2,"tools/call",json!({"name":"get_symbol_context","arguments":{"project":"mcp-fixture","stable_id":"type:example.Controller","cursor":cursor,"token_budget":800}}))).unwrap();
+        assert_eq!(resumed["result"]["isError"], false);
+
+        let mismatched = server.handle_value(request(3,"tools/call",json!({"name":"get_symbol_context","arguments":{"project":"mcp-fixture","stable_id":"method:example.Controller#create()","cursor":cursor}}))).unwrap();
+        assert_eq!(mismatched["error"]["data"]["code"], "invalid_cursor");
+
+        let graph = SyntheticGraph {
+            project: "mcp-fixture".to_owned(),
+            nodes: vec![SyntheticNode {
+                stable_id: "type:example.Controller".to_owned(),
+                kind: "TYPE".to_owned(),
+                qualified_name: "example.Controller".to_owned(),
+                simple_name: None,
+                module_name: None,
+                package_name: Some("example".to_owned()),
+                file_path: Some("Controller.java".to_owned()),
+                start_line: Some(1),
+                end_line: Some(1),
+                confidence: Confidence::CompilerResolved,
+                provenance: "test".to_owned(),
+                metadata: json!({}),
+                unresolved: Vec::new(),
+            }],
+            edges: Vec::new(),
+        };
+        server
+            .database
+            .load_synthetic("mcp-fixture", &graph)
+            .unwrap();
+        let stale = server.handle_value(request(4,"tools/call",json!({"name":"get_symbol_context","arguments":{"project":"mcp-fixture","stable_id":"type:example.Controller","cursor":cursor}}))).unwrap();
+        assert_eq!(stale["error"]["data"]["code"], "invalid_cursor");
+    }
+
+    #[test]
     fn every_tool_accepts_a_valid_call() {
         let server = server();
+        initialize(&server);
         let calls = [
             (
                 "get_project_map",
@@ -367,6 +515,7 @@ mod tests {
     #[test]
     fn invalid_projects_and_malformed_arguments_map_to_safe_errors() {
         let server = server();
+        initialize(&server);
         let missing = server
             .handle_value(request(
                 1,
@@ -393,6 +542,7 @@ mod tests {
     #[test]
     fn token_budgets_and_cancellation_are_handled() {
         let server = server();
+        initialize(&server);
         let response = server.handle_value(request(1,"tools/call",json!({"name":"get_symbol_context","arguments":{"project":"mcp-fixture","stable_id":"type:example.Controller","token_budget":128}}))).unwrap();
         assert!(
             response["result"]["structuredContent"]["budget"]["truncated"]
@@ -403,7 +553,8 @@ mod tests {
             response["result"]["structuredContent"]["budget"]["estimated_tokens"]
                 .as_u64()
                 .unwrap()
-                <= 128
+                <= 128,
+            "{response}"
         );
         let invalid = server.handle_value(request(2,"tools/call",json!({"name":"index_status","arguments":{"project":"mcp-fixture","token_budget":64}}))).unwrap();
         assert_eq!(invalid["error"]["data"]["code"], "invalid_token_budget");
@@ -414,14 +565,16 @@ mod tests {
     fn stdio_transport_initializes_calls_and_shuts_down() {
         let server = server();
         let input = format!(
-            "{}\n{}\n{}\n",
-            request(1, "initialize", json!({})),
+            "{}\n{}\n{}\n{}\n{}\n",
+            request(1, "initialize", initialize_params(LATEST_PROTOCOL_VERSION)),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             request(
                 2,
                 "tools/call",
                 json!({"name":"index_status","arguments":{"project":"mcp-fixture"}})
             ),
             request(3, "shutdown", json!({})),
+            json!({"jsonrpc":"2.0","method":"exit"}),
         );
         let mut output = Vec::new();
         run_stdio(&server, input.as_bytes(), &mut output).unwrap();
@@ -432,5 +585,50 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0]["result"]["serverInfo"]["name"], "graphine");
+        assert!(lines[2]["result"].is_null());
+    }
+
+    #[test]
+    fn protocol_validation_lifecycle_and_batches_are_explicit() {
+        let server = server();
+        let wrong_jsonrpc = server
+            .handle_value(json!({"jsonrpc":"1.0","id":1,"method":"initialize","params":initialize_params(LATEST_PROTOCOL_VERSION)}))
+            .unwrap();
+        assert_eq!(wrong_jsonrpc["error"]["code"], -32600);
+        let premature = server
+            .handle_value(request(2, "tools/list", json!({})))
+            .unwrap();
+        assert_eq!(premature["error"]["code"], -32002);
+        let malformed_id = server
+            .handle_value(json!({"jsonrpc":"2.0","id":{},"method":"initialize","params":initialize_params(LATEST_PROTOCOL_VERSION)}))
+            .unwrap();
+        assert_eq!(malformed_id["error"]["code"], -32600);
+        let batch = server
+            .handle_value(json!([request(
+                3,
+                "initialize",
+                initialize_params(LATEST_PROTOCOL_VERSION)
+            )]))
+            .unwrap();
+        assert_eq!(batch["error"]["code"], -32600);
+
+        let negotiated = server
+            .handle_value(request(4, "initialize", initialize_params("2099-01-01")))
+            .unwrap();
+        assert_eq!(
+            negotiated["result"]["protocolVersion"],
+            LATEST_PROTOCOL_VERSION
+        );
+        let before_ready = server
+            .handle_value(request(5, "tools/list", json!({})))
+            .unwrap();
+        assert_eq!(before_ready["error"]["code"], -32002);
+        server.handle_value(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        assert!(
+            server
+                .handle_value(request(6, "tools/list", json!({})))
+                .unwrap()["result"]["tools"]
+                .is_array()
+        );
     }
 }

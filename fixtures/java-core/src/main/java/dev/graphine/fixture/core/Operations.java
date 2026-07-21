@@ -37,4 +37,10 @@ public final class Operations {
             return new Operations();
         }
     }
+
+    public String repeatTrim(String value) {
+        String first = value.trim();
+        String second = value.trim();
+        return first + second + value.trim();
+    }
 }

@@ -1,7 +1,7 @@
 use graphine_protocol::{
-    ANALYZER_PLACEHOLDER, AnalyzerDiagnostic, AnalyzerSummary, Confidence, GenerationState,
-    GraphineError, ProjectId, SCHEMA_VERSION, StableId, SyntheticEdge, SyntheticGraph,
-    SyntheticNode,
+    ANALYZER_PLACEHOLDER, AnalyzerDiagnostic, AnalyzerSummary, Confidence, EdgeOccurrence,
+    GenerationState, GraphineError, ProjectId, SCHEMA_VERSION, StableId, SyntheticEdge,
+    SyntheticGraph, SyntheticNode,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -127,6 +127,29 @@ CREATE INDEX idx_diagnostics_project_generation ON analyzer_diagnostics(project_
 UPDATE projects SET schema_version=2;
 ";
 
+const MIGRATION_3: &str = r"
+CREATE TABLE edge_occurrences (
+    project_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    source_stable_id TEXT NOT NULL,
+    target_stable_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    file_path TEXT NOT NULL,
+    start_line INTEGER NOT NULL CHECK (start_line > 0),
+    end_line INTEGER NOT NULL CHECK (end_line >= start_line),
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    PRIMARY KEY (project_id, generation, source_stable_id, target_stable_id, kind, ordinal),
+    FOREIGN KEY (project_id, generation, source_stable_id, target_stable_id, kind)
+        REFERENCES edges(project_id, generation, source_stable_id, target_stable_id, kind) ON DELETE CASCADE
+);
+CREATE INDEX idx_edge_occurrences_edge ON edge_occurrences(
+    project_id, generation, source_stable_id, target_stable_id, kind, ordinal
+);
+CREATE INDEX idx_edge_occurrences_file ON edge_occurrences(project_id, generation, file_path, start_line);
+UPDATE projects SET schema_version=3;
+";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRecord {
     pub id: ProjectId,
@@ -148,6 +171,7 @@ pub struct IndexStatus {
     pub failure_summary: Option<String>,
     pub node_count: u64,
     pub edge_count: u64,
+    pub occurrence_count: u64,
     pub diagnostic_count: u64,
     pub partial: bool,
     pub analyzer_protocol_version: Option<u32>,
@@ -179,6 +203,7 @@ pub struct EdgeRecord {
     pub confidence: Confidence,
     pub provenance: String,
     pub metadata: Value,
+    pub occurrence_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,6 +290,22 @@ impl Database {
             transaction
                 .execute(
                     "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (2, ?1)",
+                    [now_ms()],
+                )
+                .map_err(db_error)?;
+        }
+        let has_version_3: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=3)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !has_version_3 {
+            transaction.execute_batch(MIGRATION_3).map_err(db_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (3, ?1)",
                     [now_ms()],
                 )
                 .map_err(db_error)?;
@@ -585,24 +626,29 @@ impl Database {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .map_err(db_error)?;
-        let (node_count, edge_count, diagnostic_count, partial, protocol, summary) = if let Some(
-            generation,
-        ) =
-            active_generation
-        {
+        let (
+            node_count,
+            edge_count,
+            occurrence_count,
+            diagnostic_count,
+            partial,
+            protocol,
+            summary,
+        ) = if let Some(generation) = active_generation {
             self.connection
                 .query_row(
                     "SELECT (SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2),
                             (SELECT COUNT(*) FROM edges WHERE project_id=?1 AND generation=?2),
+                            (SELECT COUNT(*) FROM edge_occurrences WHERE project_id=?1 AND generation=?2),
                             (SELECT COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2),
                             partial, analyzer_protocol_version, summary_json
                      FROM project_generations WHERE project_id=?1 AND generation=?2",
                     params![project.id.as_str(), generation],
-                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, bool>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<String>>(5)?)),
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, bool>(4)?, row.get::<_, Option<u32>>(5)?, row.get::<_, Option<String>>(6)?)),
                 )
                 .map_err(db_error)?
         } else {
-            (0, 0, 0, false, None, None)
+            (0, 0, 0, 0, false, None, None)
         };
         Ok(IndexStatus {
             project,
@@ -613,6 +659,7 @@ impl Database {
             failure_summary: failure,
             node_count,
             edge_count,
+            occurrence_count,
             diagnostic_count,
             partial,
             analyzer_protocol_version: protocol,
@@ -812,8 +859,11 @@ impl Database {
             "source_stable_id"
         };
         let sql = format!(
-            "SELECT source_stable_id, target_stable_id, kind, confidence, provenance, metadata_json FROM edges
-             WHERE project_id=?1 AND generation=?2 AND {column}=?3 ORDER BY kind, source_stable_id, target_stable_id LIMIT ?4"
+            "SELECT source_stable_id, target_stable_id, kind, confidence, provenance, metadata_json,
+                    (SELECT COUNT(*) FROM edge_occurrences o WHERE o.project_id=edges.project_id AND o.generation=edges.generation
+                     AND o.source_stable_id=edges.source_stable_id AND o.target_stable_id=edges.target_stable_id AND o.kind=edges.kind)
+             FROM edges WHERE project_id=?1 AND generation=?2 AND {column}=?3
+             ORDER BY kind, source_stable_id, target_stable_id LIMIT ?4"
         );
         let mut statement = self.connection.prepare(&sql).map_err(db_error)?;
         let rows = statement
@@ -835,6 +885,148 @@ impl Database {
                 })
                 .collect()
         })
+    }
+
+    /// Counts direct edges in one direction for stable context summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn direct_edge_count(
+        &self,
+        status: &IndexStatus,
+        stable_id: &str,
+        inbound: bool,
+    ) -> Result<usize, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let column = if inbound {
+            "target_stable_id"
+        } else {
+            "source_stable_id"
+        };
+        let sql = format!(
+            "SELECT COUNT(*) FROM edges WHERE project_id=?1 AND generation=?2 AND {column}=?3"
+        );
+        self.connection
+            .query_row(
+                &sql,
+                params![status.project.id.as_str(), generation, stable_id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)
+    }
+
+    /// Returns one deterministic page of inbound-then-outbound direct relationships.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn symbol_context_edges(
+        &self,
+        status: &IndexStatus,
+        stable_id: &str,
+        offset: usize,
+        limit: u32,
+    ) -> Result<(usize, Vec<(String, EdgeRecord)>), GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let inbound = self.direct_edge_count(status, stable_id, true)?;
+        let outbound = self.direct_edge_count(status, stable_id, false)?;
+        let mut statement = self.connection.prepare(
+            "SELECT direction,source_stable_id,target_stable_id,kind,confidence,provenance,metadata_json,occurrence_count FROM (
+                 SELECT 'inbound' AS direction,0 AS direction_order,source_stable_id,target_stable_id,kind,confidence,provenance,metadata_json,
+                    (SELECT COUNT(*) FROM edge_occurrences o WHERE o.project_id=edges.project_id AND o.generation=edges.generation
+                     AND o.source_stable_id=edges.source_stable_id AND o.target_stable_id=edges.target_stable_id AND o.kind=edges.kind) AS occurrence_count
+                 FROM edges WHERE project_id=?1 AND generation=?2 AND target_stable_id=?3
+                 UNION ALL
+                 SELECT 'outbound' AS direction,1 AS direction_order,source_stable_id,target_stable_id,kind,confidence,provenance,metadata_json,
+                    (SELECT COUNT(*) FROM edge_occurrences o WHERE o.project_id=edges.project_id AND o.generation=edges.generation
+                     AND o.source_stable_id=edges.source_stable_id AND o.target_stable_id=edges.target_stable_id AND o.kind=edges.kind) AS occurrence_count
+                 FROM edges WHERE project_id=?1 AND generation=?2 AND source_stable_id=?3
+             ) ORDER BY direction_order,kind,source_stable_id,target_stable_id LIMIT ?4 OFFSET ?5"
+        ).map_err(db_error)?;
+        let rows = statement
+            .query_map(
+                params![
+                    status.project.id.as_str(),
+                    generation,
+                    stable_id,
+                    limit,
+                    offset
+                ],
+                |row| {
+                    let direction: String = row.get(0)?;
+                    let confidence: String = row.get(4)?;
+                    let metadata: String = row.get(6)?;
+                    Ok((
+                        direction,
+                        EdgeRecord {
+                            source_stable_id: row.get(1)?,
+                            target_stable_id: row.get(2)?,
+                            kind: row.get(3)?,
+                            confidence: confidence
+                                .parse()
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            provenance: row.get(5)?,
+                            metadata: serde_json::from_str(&metadata)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            occurrence_count: row.get(7)?,
+                        },
+                    ))
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok((inbound.saturating_add(outbound), rows))
+    }
+
+    /// Returns bounded occurrence evidence for one logical relationship.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn relationship_occurrences(
+        &self,
+        status: &IndexStatus,
+        edge: &EdgeRecord,
+        limit: u32,
+    ) -> Result<Vec<EdgeOccurrence>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT file_path,start_line,end_line,metadata_json FROM edge_occurrences
+             WHERE project_id=?1 AND generation=?2 AND source_stable_id=?3 AND target_stable_id=?4 AND kind=?5
+             ORDER BY ordinal LIMIT ?6"
+        ).map_err(db_error)?;
+        statement
+            .query_map(
+                params![
+                    status.project.id.as_str(),
+                    generation,
+                    edge.source_stable_id,
+                    edge.target_stable_id,
+                    edge.kind,
+                    limit
+                ],
+                |row| {
+                    let metadata: String = row.get(3)?;
+                    Ok(EdgeOccurrence {
+                        file_path: row.get(0)?,
+                        start_line: row.get(1)?,
+                        end_line: row.get(2)?,
+                        metadata: serde_json::from_str(&metadata)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    })
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)
     }
 
     fn ready_status(&self, reference: &str) -> Result<IndexStatus, GraphineError> {
@@ -924,6 +1116,18 @@ fn insert_edge(
         "INSERT INTO edges(project_id,generation,source_stable_id,target_stable_id,kind,confidence,provenance,metadata_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![project.as_str(),generation,edge.source_stable_id,edge.target_stable_id,edge.kind,edge.confidence.to_string(),edge.provenance,metadata],
     ).map_err(db_error)?;
+    for (ordinal, occurrence) in edge.occurrences.iter().enumerate() {
+        let occurrence_metadata = serde_json::to_string(&occurrence.metadata).map_err(|_| {
+            GraphineError::InvalidArgument("malformed occurrence metadata".to_owned())
+        })?;
+        transaction.execute(
+            "INSERT INTO edge_occurrences(project_id,generation,source_stable_id,target_stable_id,kind,ordinal,file_path,start_line,end_line,metadata_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![project.as_str(), generation, edge.source_stable_id, edge.target_stable_id,
+                edge.kind, ordinal, occurrence.file_path, occurrence.start_line, occurrence.end_line,
+                occurrence_metadata],
+        ).map_err(db_error)?;
+    }
     Ok(())
 }
 
@@ -963,6 +1167,30 @@ pub fn validate_evidence_path(root: &Path, value: &str) -> Result<String, Graphi
     Ok(parts.join("/"))
 }
 
+fn validate_evidence_range(
+    root: &Path,
+    path: &str,
+    start: u32,
+    end: u32,
+) -> Result<(), GraphineError> {
+    let normalized = validate_evidence_path(root, path)?;
+    if start == 0 || end < start {
+        return Err(GraphineError::InvalidArgument(
+            "invalid evidence range".to_owned(),
+        ));
+    }
+    let line_count = fs::read_to_string(root.join(normalized))
+        .map_err(|_| GraphineError::InvalidPath)?
+        .lines()
+        .count();
+    if usize::try_from(end).unwrap_or(usize::MAX) > line_count {
+        return Err(GraphineError::InvalidArgument(
+            "evidence range exceeds file".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_synthetic(root: &Path, graph: &SyntheticGraph) -> Result<(), GraphineError> {
     if graph.project.trim().is_empty() {
         return Err(GraphineError::InvalidArgument(
@@ -985,7 +1213,7 @@ fn validate_synthetic(root: &Path, graph: &SyntheticGraph) -> Result<(), Graphin
         match (&node.file_path, node.start_line, node.end_line) {
             (None, None, None) => {}
             (Some(path), Some(start), Some(end)) if start > 0 && end >= start => {
-                validate_evidence_path(root, path)?;
+                validate_evidence_range(root, path, start, end)?;
             }
             _ => {
                 return Err(GraphineError::InvalidArgument(
@@ -1009,6 +1237,22 @@ fn validate_synthetic(root: &Path, graph: &SyntheticGraph) -> Result<(), Graphin
         if !edges.insert((&edge.source_stable_id, &edge.target_stable_id, &edge.kind)) {
             return Err(GraphineError::InvalidArgument("duplicate edge".to_owned()));
         }
+        for occurrence in &edge.occurrences {
+            if occurrence.start_line == 0
+                || occurrence.end_line < occurrence.start_line
+                || !occurrence.metadata.is_object()
+            {
+                return Err(GraphineError::InvalidArgument(
+                    "invalid edge occurrence".to_owned(),
+                ));
+            }
+            validate_evidence_range(
+                root,
+                &occurrence.file_path,
+                occurrence.start_line,
+                occurrence.end_line,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1021,7 +1265,7 @@ fn validate_diagnostic(root: &Path, diagnostic: &AnalyzerDiagnostic) -> Result<(
     ) {
         (None, None, None) => Ok(()),
         (Some(path), Some(start), Some(end)) if start > 0 && end >= start => {
-            validate_evidence_path(root, path).map(|_| ())
+            validate_evidence_range(root, path, start, end)
         }
         _ => Err(GraphineError::InvalidArgument(
             "invalid diagnostic range".to_owned(),
@@ -1088,6 +1332,7 @@ fn edge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EdgeRecord> {
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         provenance: row.get(4)?,
         metadata: serde_json::from_str(&metadata).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        occurrence_count: row.get(6)?,
     })
 }
 
@@ -1195,10 +1440,12 @@ mod tests {
             "project_state",
             "nodes",
             "edges",
+            "edge_occurrences",
             "evidence",
             "analyzer_diagnostics",
             "idx_nodes_stable_id",
             "idx_edges_source",
+            "idx_edge_occurrences_edge",
             "idx_diagnostics_project_generation",
         ] {
             let exists: bool = database
@@ -1211,6 +1458,46 @@ mod tests {
                 .unwrap();
             assert!(exists, "{name}");
         }
+    }
+
+    #[test]
+    fn logical_edges_preserve_all_validated_occurrences() {
+        let root = temp_project("occurrences");
+        let mut database = Database::open_in_memory().unwrap();
+        database
+            .register_project(&root, Some("occurrences"), &[])
+            .unwrap();
+        let mut fixture = graph("occurrences");
+        fixture.edges.push(SyntheticEdge {
+            source_stable_id: "type:example.Sample".to_owned(),
+            target_stable_id: "type:example.Sample".to_owned(),
+            kind: "CALLS".to_owned(),
+            confidence: Confidence::CompilerResolved,
+            provenance: "test".to_owned(),
+            metadata: serde_json::json!({}),
+            occurrences: (0..3)
+                .map(|_| EdgeOccurrence {
+                    file_path: "src/Sample.java".to_owned(),
+                    start_line: 1,
+                    end_line: 1,
+                    metadata: serde_json::json!({}),
+                })
+                .collect(),
+        });
+        database.load_synthetic("occurrences", &fixture).unwrap();
+        let status = database.status("occurrences").unwrap();
+        assert_eq!(status.edge_count, 1);
+        assert_eq!(status.occurrence_count, 3);
+        let edge = database
+            .direct_edges(&status, "type:example.Sample", false, &[], 10)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(edge.occurrence_count, 3);
+        let occurrences = database
+            .relationship_occurrences(&status, &edge, 10)
+            .unwrap();
+        assert_eq!(occurrences.len(), 3);
     }
 
     #[test]
@@ -1233,6 +1520,7 @@ mod tests {
             confidence: Confidence::CompilerResolved,
             provenance: "test".to_owned(),
             metadata: serde_json::json!({}),
+            occurrences: Vec::new(),
         });
         assert!(database.load_synthetic("sample", &invalid).is_err());
         let status = database.status("sample").unwrap();
@@ -1318,6 +1606,7 @@ mod tests {
             confidence: Confidence::CompilerResolved,
             provenance: "test".to_owned(),
             metadata: serde_json::json!({}),
+            occurrences: Vec::new(),
         };
         duplicate_edge.edges = vec![edge.clone(), edge];
         for (label, invalid) in [

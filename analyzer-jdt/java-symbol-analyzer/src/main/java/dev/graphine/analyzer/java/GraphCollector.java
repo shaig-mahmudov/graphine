@@ -29,7 +29,12 @@ final class GraphCollector {
 
     void edge(GraphEdge edge) {
         String key = edge.source() + '\0' + edge.target() + '\0' + edge.kind();
-        edges.putIfAbsent(key, edge);
+        edges.merge(key, edge, (existing, occurrence) -> {
+            List<dev.graphine.analyzer.protocol.EdgeOccurrence> merged = new ArrayList<>(existing.occurrences());
+            merged.addAll(occurrence.occurrences());
+            return new GraphEdge(existing.source(), existing.target(), existing.kind(), existing.confidence(),
+                    existing.provenance(), existing.metadata(), merged);
+        });
     }
 
     void diagnostic(Diagnostic diagnostic) {

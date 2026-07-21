@@ -2,6 +2,7 @@ package dev.graphine.analyzer.java;
 
 import dev.graphine.analyzer.protocol.AnalyzerOptions;
 import dev.graphine.analyzer.protocol.Diagnostic;
+import dev.graphine.analyzer.protocol.EdgeOccurrence;
 import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
 import dev.graphine.analyzer.resolver.SourceRoot;
@@ -214,7 +215,7 @@ final class SymbolVisitor extends ASTVisitor {
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("explicit_values", annotationValues(annotation));
             metadata.put("spring_semantics", "not_analyzed");
-            graph.edge(edge(target, annotationId, "ANNOTATED_BY", "COMPILER_RESOLVED", metadata));
+            graph.edge(edgeAt(target, annotationId, "ANNOTATED_BY", "COMPILER_RESOLVED", metadata, annotation));
             graph.resolved();
         } else if (target != null) unresolved("UNRESOLVED_ANNOTATION", annotation, annotation.getTypeName().getFullyQualifiedName(), "Annotation binding unavailable");
     }
@@ -229,8 +230,8 @@ final class SymbolVisitor extends ASTVisitor {
                     variable.getName(), null, variable.getDeclaringClass().getPackage() == null ? null : variable.getDeclaringClass().getPackage().getName(),
                     null, null, null, "COMPILER_RESOLVED", "eclipse-jdt-binding", Map.of("external", !types.contains("type:" + SymbolIds.normalizeType(variable.getDeclaringClass()))), List.of()));
             Access access = classifyAccess(name);
-            if (access.read) graph.edge(edge(methods.peek(), target, "READS_FIELD", "COMPILER_RESOLVED", Map.of()));
-            if (access.write) graph.edge(edge(methods.peek(), target, "WRITES_FIELD", "COMPILER_RESOLVED", Map.of()));
+            if (access.read) graph.edge(edgeAt(methods.peek(), target, "READS_FIELD", "COMPILER_RESOLVED", Map.of(), name));
+            if (access.write) graph.edge(edgeAt(methods.peek(), target, "WRITES_FIELD", "COMPILER_RESOLVED", Map.of(), name));
             graph.resolved();
         }
         return true;
@@ -259,8 +260,8 @@ final class SymbolVisitor extends ASTVisitor {
                 || Modifier.isPrivate(binding.getModifiers()) || Modifier.isFinal(binding.getModifiers())
                 || Modifier.isFinal(binding.getDeclaringClass().getModifiers())
                 ? "exactly_resolved" : "virtual_declared_target";
-        graph.edge(edge(source, target, constructor ? "CONSTRUCTS" : "CALLS",
-                "COMPILER_RESOLVED", Map.of("dispatch", dispatch)));
+        graph.edge(edgeAt(source, target, constructor ? "CONSTRUCTS" : "CALLS",
+                "COMPILER_RESOLVED", Map.of("dispatch", dispatch), location));
         graph.resolved();
     }
 
@@ -270,8 +271,8 @@ final class SymbolVisitor extends ASTVisitor {
         if (ambiguousLines.contains(startLine(location))) return;
         if (binding == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference", "Target binding unavailable");
         else {
-            graph.edge(edge(source, graph.externalMethod(binding), binding.isConstructor() ? "CONSTRUCTS" : "CALLS",
-                    "COMPILER_RESOLVED", Map.of("method_reference", true, "runtime_execution", "not_proven")));
+            graph.edge(edgeAt(source, graph.externalMethod(binding), binding.isConstructor() ? "CONSTRUCTS" : "CALLS",
+                    "COMPILER_RESOLVED", Map.of("method_reference", true, "runtime_execution", "not_proven"), location));
             graph.resolved();
         }
     }
@@ -320,6 +321,14 @@ final class SymbolVisitor extends ASTVisitor {
 
     private GraphEdge edge(String source, String target, String kind, String confidence, Map<String, Object> metadata) {
         return new GraphEdge(source, target, kind, confidence, "eclipse-jdt-binding", metadata);
+    }
+
+    private GraphEdge edgeAt(String source, String target, String kind, String confidence,
+                             Map<String, Object> metadata, ASTNode location) {
+        EdgeOccurrence occurrence = new EdgeOccurrence(
+                JavaProjectAnalyzer.relative(projectRoot, file), startLine(location), endLine(location), Map.of());
+        return new GraphEdge(source, target, kind, confidence, "eclipse-jdt-binding", metadata,
+                List.of(occurrence));
     }
 
     private void unresolved(String kind, ASTNode location, String symbol, String reason) {

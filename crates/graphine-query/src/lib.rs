@@ -1,7 +1,7 @@
 use graphine_index::{Database, EdgeRecord, IndexStatus, NodeRecord};
 use graphine_protocol::{
     Budget, DetailLevel, Direction, EvidenceRef, GraphineConfig, GraphineError, Pagination,
-    ResponseEnvelope, StableId,
+    ResponseEnvelope, StableId, TruncationState, UncertaintyState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -40,6 +40,8 @@ pub struct SearchSymbolRequest {
 pub struct SymbolContextRequest {
     pub project: String,
     pub stable_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
     #[serde(default)]
     pub detail: DetailLevel,
     #[serde(default)]
@@ -140,7 +142,6 @@ impl<'a> QueryService<'a> {
                 "limit must be positive".to_owned(),
             ));
         }
-        let offset = parse_cursor(request.cursor.as_deref())?;
         let fetch_limit = self
             .config
             .maximum_result_count
@@ -152,6 +153,18 @@ impl<'a> QueryService<'a> {
             &request.kinds,
             fetch_limit,
         )?;
+        let binding = CursorBinding::new(
+            &status,
+            "search_symbol",
+            None,
+            format!(
+                "query={};kinds={:?};detail={:?}",
+                request.query.trim(),
+                request.kinds,
+                request.detail
+            ),
+        );
+        let offset = decode_cursor(request.cursor.as_deref(), &binding)?;
         candidates.retain(|node| lexical_rank(request.query.trim(), node) > 0);
         candidates.sort_by_key(|node| {
             (
@@ -167,16 +180,12 @@ impl<'a> QueryService<'a> {
             .take(limit as usize)
             .map(|node| node_fact(&node, request.detail))
             .collect();
-        let next_offset = offset.saturating_add(facts.len());
-        let has_more = next_offset < total;
         let mut parts = EnvelopeParts::new(
             &status,
             json!({"query": request.query, "matched": total, "returned": facts.len()}),
         );
         parts.essential_summary = json!({"query": request.query, "matched": total});
-        parts.facts = facts;
-        parts.has_more = has_more;
-        parts.cursor = has_more.then(|| format!("offset:{next_offset}"));
+        (parts.facts, parts.secondary_facts) = facts.into_iter().partition(is_high_confidence_fact);
         for node in &parts.facts {
             if let (Some(file), Some(start), Some(end)) = (
                 node.get("file_path").and_then(Value::as_str),
@@ -190,7 +199,9 @@ impl<'a> QueryService<'a> {
                 });
             }
         }
-        Ok(compact(parts, budget))
+        let mut result = compact(parts, budget);
+        apply_pagination(&mut result, &binding, offset, total, budget);
+        Ok(result)
     }
 
     /// Returns a symbol and its direct inbound/outbound relationships.
@@ -205,23 +216,26 @@ impl<'a> QueryService<'a> {
         let budget = self.budget(request.token_budget)?;
         let stable_id = StableId::parse(request.stable_id.clone())?;
         let (status, node) = self.database.node(&request.project, &stable_id)?;
-        let inbound = self.database.direct_edges(
+        let binding = CursorBinding::new(
+            &status,
+            "symbol_context",
+            Some(stable_id.as_str()),
+            format!("detail={:?}", request.detail),
+        );
+        let offset = decode_cursor(request.cursor.as_deref(), &binding)?;
+        let (total, relationships) = self.database.symbol_context_edges(
             &status,
             stable_id.as_str(),
-            true,
-            &[],
+            offset,
             self.config.maximum_result_count,
         )?;
-        let outbound = self.database.direct_edges(
-            &status,
-            stable_id.as_str(),
-            false,
-            &[],
-            self.config.maximum_result_count,
-        )?;
+        let inbound_count = self
+            .database
+            .direct_edge_count(&status, stable_id.as_str(), true)?;
+        let outbound_count = total.saturating_sub(inbound_count);
         let mut parts = EnvelopeParts::new(
             &status,
-            json!({"symbol": node_fact(&node, request.detail), "inbound_count": inbound.len(), "outbound_count": outbound.len()}),
+            json!({"symbol": node_fact(&node, request.detail), "inbound_count": inbound_count, "outbound_count": outbound_count}),
         );
         parts.essential_summary = json!({
             "symbol": {
@@ -230,15 +244,33 @@ impl<'a> QueryService<'a> {
                 "confidence": node.confidence,
             }
         });
-        parts.facts = inbound
-            .iter()
-            .map(|edge| edge_fact(edge, "inbound", request.detail))
-            .chain(
-                outbound
-                    .iter()
-                    .map(|edge| edge_fact(edge, "outbound", request.detail)),
-            )
-            .collect();
+        for (direction, edge) in &relationships {
+            let occurrence_limit = match request.detail {
+                DetailLevel::Summary => 0,
+                DetailLevel::Standard => 1,
+                DetailLevel::Detailed => 10,
+                DetailLevel::Evidence => self.config.maximum_result_count,
+            };
+            let occurrences = if occurrence_limit == 0 {
+                Vec::new()
+            } else {
+                self.database
+                    .relationship_occurrences(&status, edge, occurrence_limit)?
+            };
+            parts
+                .evidence
+                .extend(occurrences.iter().map(|occurrence| EvidenceRef {
+                    file: occurrence.file_path.clone(),
+                    start_line: occurrence.start_line,
+                    end_line: occurrence.end_line,
+                }));
+            let fact = edge_fact(edge, direction, request.detail, &occurrences);
+            if is_high_confidence_fact(&fact) {
+                parts.facts.push(fact);
+            } else {
+                parts.secondary_facts.push(fact);
+            }
+        }
         parts.unresolved = node.unresolved;
         if node.confidence == graphine_protocol::Confidence::Ambiguous {
             parts
@@ -254,12 +286,8 @@ impl<'a> QueryService<'a> {
                 end_line: end,
             });
         }
-        let total_facts = parts.facts.len();
         let mut result = compact(parts, budget);
-        if result.facts.len() < total_facts {
-            result.pagination.has_more = true;
-            result.pagination.cursor = Some(format!("context:{}", result.facts.len()));
-        }
+        apply_pagination(&mut result, &binding, offset, total, budget);
         Ok(result)
     }
 
@@ -287,8 +315,17 @@ impl<'a> QueryService<'a> {
                 "depth and node limits must be positive".to_owned(),
             ));
         }
-        let offset = parse_cursor(request.cursor.as_deref())?;
         let (status, _) = self.database.node(&request.project, &start)?;
+        let binding = CursorBinding::new(
+            &status,
+            "trace_flow",
+            Some(start.as_str()),
+            format!(
+                "direction={:?};kinds={:?};depth={max_depth};nodes={max_nodes}",
+                request.direction, request.edge_kinds
+            ),
+        );
+        let offset = decode_cursor(request.cursor.as_deref(), &binding)?;
         let mut queue = VecDeque::from([(start.as_str().to_owned(), 0_u32)]);
         let mut visited = BTreeSet::from([start.as_str().to_owned()]);
         let mut traversed = Vec::new();
@@ -328,13 +365,9 @@ impl<'a> QueryService<'a> {
             json!({"start": start, "direction": request.direction, "visited_nodes": visited.len(), "edge_count": total}),
         );
         parts.essential_summary = json!({"start": start, "direction": request.direction});
-        parts.facts = facts;
+        (parts.facts, parts.secondary_facts) = facts.into_iter().partition(is_high_confidence_fact);
         let mut result = compact(parts, budget);
-        let consumed = offset.saturating_add(result.facts.len());
-        if consumed < total {
-            result.pagination.has_more = true;
-            result.pagination.cursor = Some(format!("offset:{consumed}"));
-        }
+        apply_pagination(&mut result, &binding, offset, total, budget);
         Ok(result)
     }
 
@@ -360,6 +393,7 @@ impl<'a> QueryService<'a> {
                     "last_successful_activation_ms": status.last_successful_activation_ms,
                     "node_count": status.node_count,
                     "edge_count": status.edge_count,
+                    "occurrence_count": status.occurrence_count,
                     "diagnostic_count": status.diagnostic_count,
                     "partial": status.partial,
                     "analyzer_protocol_version": status.analyzer_protocol_version,
@@ -386,9 +420,11 @@ struct EnvelopeParts {
     project: String,
     generation: Option<i64>,
     stale: bool,
+    partial: bool,
     summary: Value,
     essential_summary: Value,
     facts: Vec<Value>,
+    secondary_facts: Vec<Value>,
     unresolved: Vec<String>,
     ambiguities: Vec<String>,
     evidence: Vec<EvidenceRef>,
@@ -402,9 +438,11 @@ impl EnvelopeParts {
             project: status.project.display_name.clone(),
             generation: status.active_generation,
             stale: status.stale,
+            partial: status.partial,
             summary,
             essential_summary: json!({"active_generation": status.active_generation}),
             facts: Vec::new(),
+            secondary_facts: Vec::new(),
             unresolved: Vec::new(),
             ambiguities: Vec::new(),
             evidence: Vec::new(),
@@ -415,16 +453,28 @@ impl EnvelopeParts {
 }
 
 fn compact(parts: EnvelopeParts, requested: u32) -> ResponseEnvelope {
-    let total_facts = parts.facts.len();
+    let total_facts = parts
+        .facts
+        .len()
+        .saturating_add(parts.secondary_facts.len());
     let total_evidence = parts.evidence.len();
+    let total_unresolved = parts.unresolved.len();
+    let total_ambiguities = parts.ambiguities.len();
     let mut envelope = ResponseEnvelope {
         project: parts.project,
         generation: parts.generation,
         stale: parts.stale,
-        summary: parts.summary,
+        partial: parts.partial,
+        complete: true,
+        summary: parts.essential_summary.clone(),
         facts: Vec::new(),
-        unresolved: parts.unresolved,
-        ambiguities: parts.ambiguities,
+        unresolved: Vec::new(),
+        ambiguities: Vec::new(),
+        uncertainty: UncertaintyState {
+            unresolved_count: u64::try_from(total_unresolved).unwrap_or(u64::MAX),
+            ambiguity_count: u64::try_from(total_ambiguities).unwrap_or(u64::MAX),
+            ..UncertaintyState::default()
+        },
         evidence_refs: Vec::new(),
         pagination: Pagination {
             has_more: parts.has_more,
@@ -435,57 +485,127 @@ fn compact(parts: EnvelopeParts, requested: u32) -> ResponseEnvelope {
             estimated_tokens: 0,
             truncated: false,
         },
+        truncation: TruncationState::default(),
     };
     refresh_estimate(&mut envelope);
-    let mut base_truncated = false;
     if envelope.budget.estimated_tokens > requested {
-        envelope.summary = parts.essential_summary;
-        base_truncated = true;
+        envelope.summary = json!({"identity": "requested answer"});
         refresh_estimate(&mut envelope);
     }
-    if envelope.budget.estimated_tokens > requested {
-        envelope.summary = json!({"identity": "project and generation"});
+
+    // Critical uncertainty details are admitted before facts. Aggregate counts above are
+    // mandatory and therefore remain even when no individual detail can fit.
+    for ambiguity in parts.ambiguities {
+        envelope.ambiguities.push(ambiguity);
         refresh_estimate(&mut envelope);
+        if envelope.budget.estimated_tokens > requested {
+            envelope.ambiguities.pop();
+            break;
+        }
     }
-    while envelope.budget.estimated_tokens > requested && !envelope.ambiguities.is_empty() {
-        envelope.ambiguities.pop();
+    for unresolved in parts.unresolved {
+        envelope.unresolved.push(unresolved);
         refresh_estimate(&mut envelope);
+        if envelope.budget.estimated_tokens > requested {
+            envelope.unresolved.pop();
+            break;
+        }
     }
-    while envelope.budget.estimated_tokens > requested && !envelope.unresolved.is_empty() {
-        envelope.unresolved.pop();
+    admit_facts(&mut envelope, parts.facts, requested);
+    for evidence in parts.evidence {
+        envelope.evidence_refs.push(evidence);
         refresh_estimate(&mut envelope);
+        if envelope.budget.estimated_tokens > requested {
+            envelope.evidence_refs.pop();
+            break;
+        }
     }
-    for fact in parts.facts {
+
+    // Lower-confidence and secondary relationships follow evidence so uncertainty and
+    // source support cannot be displaced by inferred graph expansion.
+    admit_facts(&mut envelope, parts.secondary_facts, requested);
+
+    // Full summaries frequently contain optional counts and analyzer metadata, so they
+    // are restored only after requested facts and evidence have been considered.
+    let essential_summary = envelope.summary.clone();
+    envelope.summary = parts.summary;
+    refresh_estimate(&mut envelope);
+    let summary_truncated = envelope.budget.estimated_tokens > requested;
+    if summary_truncated {
+        envelope.summary = essential_summary;
+    }
+
+    envelope.truncation = TruncationState {
+        facts_truncated: (envelope.facts.len() < total_facts).then_some(true),
+        evidence_truncated: (envelope.evidence_refs.len() < total_evidence).then_some(true),
+        unresolved_truncated: (envelope.unresolved.len() < total_unresolved).then_some(true),
+        ambiguities_truncated: (envelope.ambiguities.len() < total_ambiguities).then_some(true),
+        summary_truncated: summary_truncated.then_some(true),
+    };
+    envelope.uncertainty.unresolved_truncated = envelope.truncation.unresolved_truncated;
+    envelope.uncertainty.ambiguities_truncated = envelope.truncation.ambiguities_truncated;
+    envelope.budget.truncated = envelope.truncation.facts_truncated.is_some()
+        || envelope.truncation.evidence_truncated.is_some()
+        || envelope.truncation.unresolved_truncated.is_some()
+        || envelope.truncation.ambiguities_truncated.is_some()
+        || envelope.truncation.summary_truncated.is_some();
+    envelope.complete = !envelope.budget.truncated && !envelope.partial && !envelope.stale;
+    refresh_estimate(&mut envelope);
+    envelope
+}
+
+fn admit_facts(envelope: &mut ResponseEnvelope, facts: Vec<Value>, requested: u32) {
+    for fact in facts {
         envelope.facts.push(fact);
-        refresh_estimate(&mut envelope);
+        refresh_estimate(envelope);
         if envelope.budget.estimated_tokens > requested {
             envelope.facts.pop();
             break;
         }
     }
-    if envelope.facts.len() == total_facts {
-        for evidence in parts.evidence {
-            envelope.evidence_refs.push(evidence);
-            refresh_estimate(&mut envelope);
-            if envelope.budget.estimated_tokens > requested {
-                envelope.evidence_refs.pop();
-                break;
-            }
-        }
-    }
-    envelope.budget.truncated = base_truncated
-        || envelope.facts.len() < total_facts
-        || envelope.evidence_refs.len() < total_evidence;
-    if envelope.budget.truncated {
-        envelope.pagination.has_more = true;
-    }
-    refresh_estimate(&mut envelope);
-    envelope
 }
 
 fn refresh_estimate(envelope: &mut ResponseEnvelope) {
     envelope.budget.estimated_tokens = 0;
     envelope.budget.estimated_tokens = estimated_tokens(envelope);
+}
+
+fn apply_pagination(
+    envelope: &mut ResponseEnvelope,
+    binding: &CursorBinding,
+    offset: usize,
+    total: usize,
+    requested: u32,
+) {
+    loop {
+        let consumed = offset.saturating_add(envelope.facts.len());
+        envelope.pagination.has_more = consumed < total;
+        envelope.pagination.cursor = envelope
+            .pagination
+            .has_more
+            .then(|| encode_cursor(binding, consumed));
+        refresh_estimate(envelope);
+        if envelope.budget.estimated_tokens <= requested {
+            break;
+        }
+        if envelope.evidence_refs.pop().is_some() {
+            envelope.truncation.evidence_truncated = Some(true);
+        } else if envelope.facts.pop().is_some() {
+            envelope.truncation.facts_truncated = Some(true);
+        } else if envelope.summary
+            != json!({"identity": binding.stable_id.as_deref().unwrap_or(binding.operation)})
+        {
+            envelope.summary = json!({
+                "identity": binding.stable_id.as_deref().unwrap_or(binding.operation)
+            });
+            envelope.truncation.summary_truncated = Some(true);
+        } else {
+            break;
+        }
+        envelope.budget.truncated = true;
+        envelope.complete = false;
+    }
+    refresh_estimate(envelope);
 }
 
 /// Returns a conservative character-based estimate, not an exact tokenizer count.
@@ -544,14 +664,85 @@ fn normalize_tokens(value: &str) -> String {
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn parse_cursor(cursor: Option<&str>) -> Result<usize, GraphineError> {
-    let Some(cursor) = cursor else {
-        return Ok(0);
-    };
-    cursor
-        .strip_prefix("offset:")
-        .and_then(|value| value.parse().ok())
-        .ok_or(GraphineError::InvalidCursor)
+struct CursorBinding {
+    project_id: String,
+    generation: i64,
+    operation: &'static str,
+    stable_id: Option<String>,
+    scope: String,
+}
+
+impl CursorBinding {
+    fn new(
+        status: &IndexStatus,
+        operation: &'static str,
+        stable_id: Option<&str>,
+        scope: String,
+    ) -> Self {
+        Self {
+            project_id: status.project.id.as_str().to_owned(),
+            generation: status.active_generation.unwrap_or_default(),
+            operation,
+            stable_id: stable_id.map(str::to_owned),
+            scope,
+        }
+    }
+}
+
+fn encode_cursor(binding: &CursorBinding, offset: usize) -> String {
+    format!(
+        "v1:{}:{offset}:{}",
+        binding.generation,
+        cursor_binding_digest(binding)
+    )
+}
+
+fn decode_cursor(cursor: Option<&str>, binding: &CursorBinding) -> Result<usize, GraphineError> {
+    let Some(cursor) = cursor else { return Ok(0) };
+    if cursor.len() > 256 {
+        return Err(GraphineError::InvalidCursor);
+    }
+    let mut parts = cursor.split(':');
+    if parts.next() != Some("v1") {
+        return Err(GraphineError::InvalidCursor);
+    }
+    let generation = parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or(GraphineError::InvalidCursor)?;
+    let offset = parts
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(GraphineError::InvalidCursor)?;
+    let digest = parts.next().ok_or(GraphineError::InvalidCursor)?;
+    if parts.next().is_some()
+        || generation != binding.generation
+        || digest != cursor_binding_digest(binding)
+    {
+        return Err(GraphineError::InvalidCursor);
+    }
+    Ok(offset)
+}
+
+fn cursor_binding_digest(binding: &CursorBinding) -> String {
+    fn update(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+    let canonical = format!(
+        "{}\0{}\0{}\0{}\0{}",
+        binding.project_id,
+        binding.generation,
+        binding.operation,
+        binding.stable_id.as_deref().unwrap_or(""),
+        binding.scope
+    );
+    let first = update(0xcbf2_9ce4_8422_2325, canonical.as_bytes());
+    let second = update(0x8422_2325_cbf2_9ce4, canonical.as_bytes());
+    format!("{first:016x}{second:016x}")
 }
 
 fn node_fact(node: &NodeRecord, detail: DetailLevel) -> Value {
@@ -578,20 +769,52 @@ fn node_fact(node: &NodeRecord, detail: DetailLevel) -> Value {
     fact
 }
 
-fn edge_fact(edge: &EdgeRecord, direction: &str, detail: DetailLevel) -> Value {
+fn edge_fact(
+    edge: &EdgeRecord,
+    direction: &str,
+    detail: DetailLevel,
+    occurrences: &[graphine_protocol::EdgeOccurrence],
+) -> Value {
     let mut fact = json!({
         "direction": direction,
         "source": edge.source_stable_id,
         "target": edge.target_stable_id,
         "kind": edge.kind,
         "confidence": edge.confidence,
+        "occurrence_count": edge.occurrence_count,
     });
     if matches!(detail, DetailLevel::Detailed | DetailLevel::Evidence) {
         fact.as_object_mut()
             .expect("object literal")
             .insert("metadata".to_owned(), edge.metadata.clone());
+        let evidence: Vec<_> = occurrences
+            .iter()
+            .map(|occurrence| {
+                json!({
+                    "file": occurrence.file_path,
+                    "start_line": occurrence.start_line,
+                    "end_line": occurrence.end_line,
+                    "metadata": occurrence.metadata,
+                })
+            })
+            .collect();
+        let object = fact.as_object_mut().expect("object literal");
+        object.insert("evidence_refs".to_owned(), json!(evidence));
+        object.insert(
+            "evidence_truncated".to_owned(),
+            json!(u64::try_from(occurrences.len()).unwrap_or(u64::MAX) < edge.occurrence_count),
+        );
     }
     fact
+}
+
+fn is_high_confidence_fact(fact: &Value) -> bool {
+    matches!(
+        fact.get("confidence").and_then(Value::as_str),
+        Some(
+            "RUNTIME_CONFIRMED" | "BYTECODE_CONFIRMED" | "COMPILER_RESOLVED" | "FRAMEWORK_RESOLVED"
+        )
+    )
 }
 
 #[cfg(test)]
@@ -640,10 +863,25 @@ mod tests {
     }
 
     #[test]
-    fn cursors_are_stable_and_reject_malformed_values() {
-        assert_eq!(parse_cursor(Some("offset:42")).unwrap(), 42);
-        assert!(parse_cursor(Some("42")).is_err());
-        assert!(parse_cursor(Some("offset:nope")).is_err());
+    fn cursors_are_bound_and_reject_malformed_values() {
+        let status = fake_status();
+        let binding = CursorBinding::new(
+            &status,
+            "symbol_context",
+            Some("type:example.A"),
+            "detail=Summary".to_owned(),
+        );
+        let cursor = encode_cursor(&binding, 42);
+        assert_eq!(decode_cursor(Some(&cursor), &binding).unwrap(), 42);
+        let other = CursorBinding::new(
+            &status,
+            "symbol_context",
+            Some("type:example.B"),
+            "detail=Summary".to_owned(),
+        );
+        assert!(decode_cursor(Some(&cursor), &other).is_err());
+        assert!(decode_cursor(Some("offset:42"), &binding).is_err());
+        assert!(decode_cursor(Some("v1:nope"), &binding).is_err());
     }
 
     #[test]
@@ -661,6 +899,33 @@ mod tests {
             small,
             serde_json::from_str(&serde_json::to_string(&small).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn tiny_budgets_never_hide_aggregate_uncertainty() {
+        let status = fake_status();
+        let mut parts = EnvelopeParts::new(
+            &status,
+            json!({"answer": "identity", "optional": "metadata"}),
+        );
+        parts.essential_summary = json!({"answer": "identity"});
+        parts.unresolved = (0..8)
+            .map(|index| format!("unresolved-{index}-with-details"))
+            .collect();
+        parts.ambiguities = (0..2)
+            .map(|index| format!("ambiguity-{index}-with-details"))
+            .collect();
+        parts.facts = (0..10).map(|index| json!({"fact": index})).collect();
+        let first = compact(parts, 128);
+        assert_eq!(first.uncertainty.unresolved_count, 8);
+        assert_eq!(first.uncertainty.ambiguity_count, 2);
+        assert!(
+            first.uncertainty.unresolved_truncated.unwrap_or(false)
+                || first.uncertainty.ambiguities_truncated.unwrap_or(false)
+        );
+        assert!(first.budget.truncated);
+        assert!(!first.complete);
+        assert!(serde_json::to_string(&first).is_ok());
     }
 
     #[test]
@@ -698,6 +963,7 @@ mod tests {
                     confidence: Confidence::CompilerResolved,
                     provenance: "generated".to_owned(),
                     metadata: json!({}),
+                    occurrences: Vec::new(),
                 })
             })
             .collect();
@@ -729,6 +995,7 @@ mod tests {
             .get_symbol_context(&SymbolContextRequest {
                 project: "large".to_owned(),
                 stable_id: "type:bench.Node9999".to_owned(),
+                cursor: None,
                 detail: DetailLevel::Standard,
                 token_budget: Some(800),
             })
@@ -763,6 +1030,7 @@ mod tests {
             failure_summary: None,
             node_count: 1,
             edge_count: 0,
+            occurrence_count: 0,
             diagnostic_count: 0,
             partial: false,
             analyzer_protocol_version: None,

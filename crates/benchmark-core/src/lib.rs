@@ -355,6 +355,82 @@ pub fn generate_medium_corpus(output: &Path, type_count: usize) -> Result<()> {
     Ok(())
 }
 
+/// Generates a deterministic, dependency-free Spring-shaped Maven corpus.
+/// Framework annotations are source stubs with canonical Spring package names,
+/// allowing safe-mode static analysis without executing Maven or using a network.
+///
+/// # Errors
+///
+/// Returns an error when the destination is non-empty, the requested size is
+/// outside the bounded range, or files cannot be written.
+pub fn generate_spring_medium_corpus(output: &Path, controller_count: usize) -> Result<()> {
+    if !(25..=500).contains(&controller_count) {
+        bail!("controller count must be between 25 and 500");
+    }
+    if output.exists() && fs::read_dir(output)?.next().is_some() {
+        bail!("Spring medium corpus output must be empty");
+    }
+    let sources = output.join("src/main/java");
+    fs::create_dir_all(&sources)?;
+    fs::write(
+        output.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion><groupId>dev.graphine</groupId><artifactId>spring-medium</artifactId><version>1</version><properties><maven.compiler.release>17</maven.compiler.release></properties></project>\n",
+    )?;
+    let stubs = [
+        (
+            "org/springframework/stereotype/Service.java",
+            "package org.springframework.stereotype; public @interface Service { String value() default \"\"; }\n",
+        ),
+        (
+            "org/springframework/web/bind/annotation/RestController.java",
+            "package org.springframework.web.bind.annotation; public @interface RestController { String value() default \"\"; }\n",
+        ),
+        (
+            "org/springframework/web/bind/annotation/RequestMapping.java",
+            "package org.springframework.web.bind.annotation; public @interface RequestMapping { String[] value() default {}; String[] path() default {}; }\n",
+        ),
+        (
+            "org/springframework/web/bind/annotation/GetMapping.java",
+            "package org.springframework.web.bind.annotation; public @interface GetMapping { String[] value() default {}; String[] path() default {}; }\n",
+        ),
+        (
+            "org/springframework/boot/autoconfigure/SpringBootApplication.java",
+            "package org.springframework.boot.autoconfigure; public @interface SpringBootApplication {}\n",
+        ),
+    ];
+    for (relative, contents) in stubs {
+        let path = sources.join(relative);
+        fs::create_dir_all(path.parent().context("stub path has no parent")?)?;
+        fs::write(path, contents)?;
+    }
+    let application = sources.join("dev/graphine/springmedium/MediumApplication.java");
+    let application_parent = application
+        .parent()
+        .context("application path has no parent")?;
+    fs::create_dir_all(application_parent)?;
+    fs::write(
+        &application,
+        "package dev.graphine.springmedium; import org.springframework.boot.autoconfigure.SpringBootApplication; @SpringBootApplication public class MediumApplication {}\n",
+    )?;
+    for index in 0..controller_count {
+        let service = format!(
+            "package dev.graphine.springmedium; import org.springframework.stereotype.Service; @Service public final class Service{index:03} {{ public String find(long id) {{ return \"item-\" + id; }} }}\n"
+        );
+        let controller = format!(
+            "package dev.graphine.springmedium; import org.springframework.web.bind.annotation.*; @RestController @RequestMapping(\"/api/c{index:03}\") public final class Controller{index:03} {{ private final Service{index:03} service; public Controller{index:03}(Service{index:03} service) {{ this.service=service; }} @GetMapping(\"/{{id}}\") public String get(long id) {{ return service.find(id); }} }}\n"
+        );
+        fs::write(
+            application_parent.join(format!("Service{index:03}.java")),
+            service,
+        )?;
+        fs::write(
+            application_parent.join(format!("Controller{index:03}.java")),
+            controller,
+        )?;
+    }
+    Ok(())
+}
+
 impl Corpus {
     /// Loads and validates the benchmark corpus rooted at `root`.
     ///
@@ -786,5 +862,33 @@ mod tests {
             fs::read(first.join("pom.xml")).unwrap(),
             fs::read(second.join("pom.xml")).unwrap()
         );
+    }
+
+    #[test]
+    fn spring_medium_corpus_has_bounded_deterministic_routes() {
+        let output = std::env::temp_dir().join(format!(
+            "graphine-spring-medium-test-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
+        ));
+        if output.exists() {
+            fs::remove_dir_all(&output).unwrap();
+        }
+        generate_spring_medium_corpus(&output, 25).unwrap();
+        let controller = fs::read_to_string(
+            output.join("src/main/java/dev/graphine/springmedium/Controller024.java"),
+        )
+        .unwrap();
+        assert!(controller.contains("@RequestMapping(\"/api/c024\")"));
+        assert!(controller.contains("@GetMapping(\"/{id}\")"));
+        assert!(
+            output
+                .join("src/main/java/org/springframework/stereotype/Service.java")
+                .is_file()
+        );
+        fs::remove_dir_all(output).unwrap();
     }
 }

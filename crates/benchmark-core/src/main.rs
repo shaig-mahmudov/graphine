@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
-    Corpus, evaluate_graph_jsonl, generate_medium_corpus, validate_report,
-    write_graph_accuracy_report, write_report,
+    Corpus, evaluate_graph_jsonl, generate_medium_corpus, generate_spring_medium_corpus,
+    validate_report, write_graph_accuracy_report, write_report,
 };
 use std::env;
 use std::path::{Path, PathBuf};
@@ -85,15 +85,39 @@ fn main() -> Result<()> {
             generate_medium_corpus(&output, types)?;
             println!("generated {types} types at {}", output.display());
         }
+        "generate-spring-medium" => {
+            generate_spring_medium_command(&mut args, &root)?;
+        }
         _ => {
             eprintln!(
-                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core generate-medium --output <path> --types <n>"
+                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core generate-medium --output <path> --types <n>\n  benchmark-core generate-spring-medium --output <path> --controllers <n>"
             );
             if command != "help" && command != "--help" && command != "-h" {
                 bail!("unknown command: {command}");
             }
         }
     }
+    Ok(())
+}
+
+fn generate_spring_medium_command(
+    args: &mut impl Iterator<Item = String>,
+    root: &Path,
+) -> Result<()> {
+    expect_flag(args, "--output")?;
+    let output = resolve_output(root, &args.next().context("--output requires a path")?);
+    expect_flag(args, "--controllers")?;
+    let controllers: usize = args
+        .next()
+        .context("--controllers requires a number")?
+        .parse()
+        .context("invalid controller count")?;
+    reject_extra_args(args)?;
+    generate_spring_medium_corpus(&output, controllers)?;
+    println!(
+        "generated {controllers} Spring controller/service pairs at {}",
+        output.display()
+    );
     Ok(())
 }
 

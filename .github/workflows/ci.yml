@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.86.0
           components: rustfmt, clippy
       - uses: actions/cache@v4
         with:
@@ -76,7 +76,7 @@ jobs:
           cache: maven
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.86.0
       - uses: actions/cache@v4
         with:
           path: |
@@ -86,11 +86,15 @@ jobs:
           key: e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'analyzer-jdt/pom.xml') }}
       - name: Linux E2E
         if: runner.os == 'Linux'
-        run: bash scripts/test-phase2-e2e.sh
+        run: |
+          bash scripts/test-phase2-e2e.sh
+          bash scripts/test-phase3-e2e.sh
       - name: Windows E2E
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/test-phase2-e2e.ps1
+        run: |
+          ./scripts/test-phase2-e2e.ps1
+          ./scripts/test-phase3-e2e.ps1
 
   accuracy:
     name: java-graph-accuracy
@@ -104,7 +108,7 @@ jobs:
           cache: maven
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.86.0
       - uses: actions/cache@v4
         with:
           path: |
@@ -113,6 +117,7 @@ jobs:
             target
           key: accuracy-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'analyzer-jdt/pom.xml') }}
       - run: bash scripts/evaluate-java-accuracy.sh target/accuracy-reports
+      - run: bash scripts/evaluate-spring-accuracy.sh target/accuracy-reports
       - uses: actions/upload-artifact@v4
         if: always()
         with:

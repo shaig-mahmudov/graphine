@@ -101,7 +101,7 @@ impl StableId {
             .split_once(':')
             .ok_or_else(|| GraphineError::InvalidStableId(value.clone()))?;
         let valid = match kind {
-            "project" | "module" | "package" | "type" | "bean" | "entity" => {
+            "project" | "module" | "package" | "type" | "bean" | "entity" | "config" => {
                 !body.trim().is_empty()
             }
             "method" | "constructor" => {
@@ -371,8 +371,12 @@ pub struct AnalyzerSummary {
     pub duration_ms: u64,
     pub classpath_resolution_ms: u64,
     pub parsing_ms: u64,
+    #[serde(default)]
+    pub spring_semantic_ms: u64,
     pub serialization_ms: u64,
     pub peak_java_memory_bytes: u64,
+    #[serde(default)]
+    pub capabilities: std::collections::BTreeMap<String, bool>,
     pub status: String,
 }
 
@@ -614,6 +618,7 @@ mod tests {
             "field:example.Event#name",
             "route:POST:/api/events",
             "bean:eventService",
+            "config:mail.api-key",
         ];
         for value in valid {
             assert!(StableId::parse(value).is_ok(), "{value}");

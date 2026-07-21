@@ -1,0 +1,6 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.graphine.fixture</groupId><artifactId>java-multi</artifactId><version>1.0.0</version><packaging>pom</packaging>
+  <modules><module>api</module><module>service</module></modules>
+  <properties><maven.compiler.release>17</maven.compiler.release></properties>
+</project>

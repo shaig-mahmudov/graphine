@@ -37,8 +37,17 @@ pub struct AnalyzerClient {
     maven_executable: PathBuf,
     timeout: Duration,
     output_limit: usize,
+    discovery: AnalyzerJarDiscovery,
     #[cfg(test)]
     command_override: Option<(PathBuf, Vec<OsString>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalyzerJarDiscovery {
+    pub path: PathBuf,
+    pub source: String,
+    pub searched: Vec<PathBuf>,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -54,16 +63,15 @@ pub struct AnalysisOutcome {
 
 impl AnalyzerClient {
     #[must_use]
-    pub fn from_config(config: &GraphineConfig, workspace_root: &Path) -> Self {
-        let worker_jar = config.analyzer_jar.clone().unwrap_or_else(|| {
-            workspace_root.join("analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar")
-        });
+    pub fn from_config(config: &GraphineConfig) -> Self {
+        let discovery = discover_analyzer_jar(config);
         Self {
             java_executable: config.java_executable.clone(),
-            worker_jar,
+            worker_jar: discovery.path.clone(),
             maven_executable: config.maven_executable.clone(),
             timeout: Duration::from_millis(config.analyzer_timeout_ms),
             output_limit: config.analyzer_output_limit_bytes,
+            discovery,
             #[cfg(test)]
             command_override: None,
         }
@@ -77,15 +85,27 @@ impl AnalyzerClient {
         timeout: Duration,
         output_limit: usize,
     ) -> Self {
+        let discovery = AnalyzerJarDiscovery {
+            available: worker_jar.is_file(),
+            path: worker_jar.clone(),
+            source: "explicit_constructor".to_owned(),
+            searched: vec![worker_jar.clone()],
+        };
         Self {
             java_executable,
             worker_jar,
             maven_executable,
             timeout,
             output_limit,
+            discovery,
             #[cfg(test)]
             command_override: None,
         }
+    }
+
+    #[must_use]
+    pub const fn discovery(&self) -> &AnalyzerJarDiscovery {
+        &self.discovery
     }
 
     /// Runs the analyzer and atomically activates its validated graph.
@@ -316,6 +336,82 @@ impl AnalyzerClient {
     }
 }
 
+#[must_use]
+pub fn discover_analyzer_jar(config: &GraphineConfig) -> AnalyzerJarDiscovery {
+    let executable = std::env::current_exe().ok();
+    let environment = std::env::var_os("GRAPHINE_ANALYZER_JAR").map(PathBuf::from);
+    let development = if cfg!(debug_assertions) {
+        find_development_root()
+    } else {
+        None
+    };
+    discover_analyzer_jar_from(
+        config,
+        environment,
+        executable.as_deref(),
+        development.as_deref(),
+    )
+}
+
+fn discover_analyzer_jar_from(
+    config: &GraphineConfig,
+    environment: Option<PathBuf>,
+    executable: Option<&Path>,
+    development_root: Option<&Path>,
+) -> AnalyzerJarDiscovery {
+    let mut candidates: Vec<(PathBuf, &str)> = Vec::new();
+    if let Some(path) = &config.analyzer_jar {
+        candidates.push((path.clone(), "config"));
+    }
+    if let Some(path) = environment {
+        candidates.push((path, "environment"));
+    }
+    if let Some(directory) = executable.and_then(Path::parent) {
+        candidates.push((
+            directory.join("lib/graphine-analyzer.jar"),
+            "executable_lib",
+        ));
+        candidates.push((
+            directory.join("graphine-analyzer.jar"),
+            "executable_sibling",
+        ));
+    }
+    if let Some(root) = development_root {
+        candidates.push((
+            root.join("analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar"),
+            "development_workspace",
+        ));
+    }
+    let searched: Vec<_> = candidates.iter().map(|(path, _)| path.clone()).collect();
+    if let Some((path, source)) = candidates.iter().find(|(path, _)| path.is_file()) {
+        return AnalyzerJarDiscovery {
+            path: path.clone(),
+            source: (*source).to_owned(),
+            searched,
+            available: true,
+        };
+    }
+    AnalyzerJarDiscovery {
+        path: candidates.first().map_or_else(
+            || PathBuf::from("graphine-analyzer.jar"),
+            |(path, _)| path.clone(),
+        ),
+        source: "not_found".to_owned(),
+        searched,
+        available: false,
+    }
+}
+
+fn find_development_root() -> Option<PathBuf> {
+    let current = std::env::current_dir().ok()?;
+    current.ancestors().find_map(|candidate| {
+        candidate
+            .join("analyzer-jdt/pom.xml")
+            .is_file()
+            .then(|| candidate.to_path_buf())
+    })
+}
+
 struct RawAnalysis {
     analyzer_version: String,
     fingerprint: String,
@@ -403,6 +499,7 @@ impl EventCollector {
                 confidence,
                 provenance,
                 metadata,
+                occurrences,
             } if self.started => {
                 if kind.is_empty()
                     || !metadata.is_object()
@@ -419,6 +516,7 @@ impl EventCollector {
                     confidence,
                     provenance,
                     metadata,
+                    occurrences,
                 });
             }
             AnalyzerEvent::Diagnostic { diagnostic } if self.started => {
@@ -577,6 +675,7 @@ fn resolve_executable(executable: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn protocol_rejects_malformed_version_duplicates_and_incomplete_streams() {
@@ -602,6 +701,25 @@ mod tests {
         assert!(!token.is_cancelled());
         token.cancel();
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn packaged_analyzer_discovery_is_executable_relative_and_ordered() {
+        let root = std::env::temp_dir().join(format!("graphine-discovery-{}", std::process::id()));
+        let binary = root.join(if cfg!(windows) {
+            "graphine.exe"
+        } else {
+            "graphine"
+        });
+        let packaged = root.join("lib/graphine-analyzer.jar");
+        fs::create_dir_all(packaged.parent().unwrap()).unwrap();
+        fs::write(&packaged, b"jar").unwrap();
+        let config = GraphineConfig::default();
+        let discovery = discover_analyzer_jar_from(&config, None, Some(&binary), None);
+        assert_eq!(discovery.path, packaged);
+        assert_eq!(discovery.source, "executable_lib");
+        assert!(discovery.available);
+        assert_eq!(discovery.searched[0], packaged);
     }
 
     #[test]

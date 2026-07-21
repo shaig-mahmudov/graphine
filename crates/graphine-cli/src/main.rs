@@ -4,10 +4,11 @@ use graphine_analyzer_client::{AnalyzerClient, CancellationToken};
 use graphine_index::Database;
 use graphine_mcp::{McpServer, run_stdio};
 use graphine_protocol::{AnalyzerMode, GraphineConfig, SyntheticGraph};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -160,6 +161,7 @@ fn main() -> Result<()> {
                 "last_successful_activation_ms": status.last_successful_activation_ms,
                 "node_count": status.node_count,
                 "edge_count": status.edge_count,
+                "occurrence_count": status.occurrence_count,
                 "diagnostic_count": status.diagnostic_count,
                 "partial": status.partial,
                 "analyzer_protocol_version": status.analyzer_protocol_version,
@@ -169,13 +171,40 @@ fn main() -> Result<()> {
         }
         Command::Doctor => {
             let database = Database::open(&database_path, config.sqlite_timeout_ms)?;
+            let java_version = executable_version(&config.java_executable, &["-version"]);
+            let maven_version = executable_version(&config.maven_executable, &["--version"]);
+            let client = AnalyzerClient::from_config(&config);
+            let analyzer_version = client.version().ok();
+            let discovery = client.discovery();
+            let java_indexing = java_version.is_some() && analyzer_version.is_some();
             print_json(&json!({
-                "status": "ok",
-                "schema_version": graphine_protocol::SCHEMA_VERSION,
-                "database": database_path,
+                "status": if java_indexing { "ok" } else { "degraded" },
+                "database": {
+                    "status": "ok",
+                    "path": database_path,
+                    "schema_version": graphine_protocol::SCHEMA_VERSION
+                },
                 "registered_projects": database.list_projects()?.len(),
                 "transport": config.mcp_transport,
-                "real_java_indexing": false,
+                "java": {"available": java_version.is_some(), "version": java_version},
+                "analyzer": {
+                    "available": analyzer_version.is_some(),
+                    "version": analyzer_version,
+                    "protocol_version": if analyzer_version.is_some() { Some(graphine_protocol::ANALYZER_PROTOCOL_VERSION) } else { None },
+                    "jar": discovery.path,
+                    "source": discovery.source,
+                    "searched": discovery.searched,
+                },
+                "maven": {
+                    "available": maven_version.is_some(),
+                    "version": maven_version,
+                    "required_only_for_trusted_mode": true
+                },
+                "capabilities": {
+                    "java_indexing": java_indexing,
+                    "spring_semantics": false,
+                    "gradle": false
+                }
             }))?;
         }
         Command::Config => print_json(&serde_json::to_value(&config)?)?,
@@ -205,6 +234,7 @@ fn main() -> Result<()> {
                 "active": true,
                 "nodes": status.node_count,
                 "edges": status.edge_count,
+                "occurrences": status.occurrence_count,
             }))?;
         }
         Command::Serve => {
@@ -220,7 +250,7 @@ fn main() -> Result<()> {
             allow_partial,
         } => {
             let mut database = Database::open(&database_path, config.sqlite_timeout_ms)?;
-            let client = AnalyzerClient::from_config(&config, workspace_root());
+            let client = AnalyzerClient::from_config(&config);
             let outcome = client.analyze_and_ingest(
                 &mut database,
                 &project,
@@ -240,12 +270,22 @@ fn main() -> Result<()> {
             }))?;
         }
         Command::Analyzer { command } => {
-            let client = AnalyzerClient::from_config(&config, workspace_root());
-            let version = client.version()?;
+            let client = AnalyzerClient::from_config(&config);
             match command {
-                AnalyzerCommand::Doctor => print_json(&json!({"status":"ok","worker":version,
-                    "jar": config.analyzer_jar.clone().unwrap_or_else(|| workspace_root().join("analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar"))}))?,
-                AnalyzerCommand::Version => print_json(&json!({"worker":version}))?,
+                AnalyzerCommand::Doctor => {
+                    let discovery = client.discovery();
+                    let version = client.version().ok();
+                    print_json(&json!({
+                        "status": if version.is_some() { "ok" } else { "unavailable" },
+                        "worker": version,
+                        "protocol_version": if version.is_some() { Some(graphine_protocol::ANALYZER_PROTOCOL_VERSION) } else { None },
+                        "jar": discovery.path,
+                        "source": discovery.source,
+                        "searched": discovery.searched,
+                        "action": if version.is_some() { Value::Null } else { json!("set analyzer_jar/GRAPHINE_ANALYZER_JAR or install graphine-analyzer.jar beside the executable or under lib/") }
+                    }))?;
+                }
+                AnalyzerCommand::Version => print_json(&json!({"worker":client.version()?}))?,
             }
         }
         Command::Diagnostics { project } => {
@@ -256,13 +296,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("graphine-cli must live at crates/graphine-cli")
-}
-
 fn init_tracing(level: &str) -> Result<()> {
     let filter = EnvFilter::try_new(level).context("invalid log level")?;
     tracing_subscriber::fmt()
@@ -271,6 +304,24 @@ fn init_tracing(level: &str) -> Result<()> {
         .with_ansi(false)
         .try_init()
         .map_err(|error| anyhow!("failed to initialize tracing: {error}"))
+}
+
+fn executable_version(executable: &Path, arguments: &[&str]) -> Option<String> {
+    let output = ProcessCommand::new(executable)
+        .args(arguments)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = if output.stdout.is_empty() {
+        String::from_utf8(output.stderr).ok()?
+    } else {
+        String::from_utf8(output.stdout).ok()?
+    };
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().chars().take(200).collect())
 }
 
 fn print_json(value: &serde_json::Value) -> Result<()> {

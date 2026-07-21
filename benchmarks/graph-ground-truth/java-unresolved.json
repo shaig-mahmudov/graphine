@@ -1,0 +1,8 @@
+{
+  "fixture": "java-unresolved",
+  "expected": [
+    {"question_id":"java-unresolved-001","category":"unresolved_dependencies","event":"diagnostic","kind":"UNRESOLVED_METHOD_CALL","symbol_text":"send"}
+  ],
+  "forbidden": [],
+  "unsupported_questions": []
+}

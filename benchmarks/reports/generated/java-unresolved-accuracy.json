@@ -1,0 +1,18 @@
+{
+  "fixture": "java-unresolved",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 1,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "java-unresolved-001",
+      "category": "unresolved_dependencies",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    }
+  ]
+}

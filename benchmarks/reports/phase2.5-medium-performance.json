@@ -1,0 +1,39 @@
+{
+    "report_version":  1,
+    "generated_at":  "2026-07-21T18:32:02.7098827Z",
+    "environment":  {
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "java":  "openjdk version \"21.0.11\" 2026-04-21 LTS",
+                        "rust":  "rustc 1.96.0 (ac68faa20 2026-05-25)"
+                    },
+    "corpus":  {
+                   "generator":  "benchmark-core generate-medium",
+                   "type_count":  250,
+                   "file_count":  250,
+                   "source_lines":  5000
+               },
+    "graph":  {
+                  "node_count":  1252,
+                  "edge_count":  2751,
+                  "occurrence_count":  1750,
+                  "database_bytes":  4644864
+              },
+    "timing_ms":  {
+                      "end_to_end_analysis":  2639,
+                      "analyzer":  1256,
+                      "ingestion":  818,
+                      "query_p50":  16,
+                      "query_p95":  18
+                  },
+    "memory_bytes":  {
+                         "peak_java_heap_observed":  41635600,
+                         "peak_rust_working_set":  16678912
+                     },
+    "assumptions":  [
+                        "Generated corpus has no external dependencies",
+                        "Query latency includes fresh STDIO process startup",
+                        "Peak Java heap is the analyzer\u0027s observation",
+                        "Results describe this environment only and are not universal performance claims"
+                    ]
+}

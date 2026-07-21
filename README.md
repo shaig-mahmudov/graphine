@@ -2,7 +2,7 @@
 
 Graphine is a local-first code-intelligence foundation and MCP server for Java and Spring Boot repositories. It gives AI coding agents compact structural facts, evidence locations, confidence, and unresolved ambiguity without uploading source code.
 
-## Current status: Phase 2
+## Current status: Phase 2.5 foundation hardening
 
 The repository contains the Phase 0 evaluation foundation, Phase 1 local graph service, and Phase 2 Java analyzer:
 
@@ -10,13 +10,13 @@ The repository contains the Phase 0 evaluation foundation, Phase 1 local graph s
 - versioned schemas, 44 questions, matching ground truth, and four Java 17 fixtures;
 - a benchmark validator, statistics CLI, and deterministic run reports;
 - a `graphine` CLI for registration, explicit safe/trusted Java analysis, diagnostics, synthetic indexing, health checks, and MCP serving;
-- SQLite project, generation, node, edge, and evidence storage with atomic activation;
-- deterministic lexical queries, bounded traversal, pagination, detail levels, and token-budget compaction; and
-- a five-tool MCP server over STDIO with safe JSON-RPC errors and structured tracing to stderr;
+- SQLite project, generation, logical-edge, normalized occurrence-evidence, and diagnostic storage with atomic activation;
+- deterministic lexical queries, bounded traversal, generation-bound opaque pagination, detail levels, and uncertainty-preserving token-budget compaction;
+- a five-tool MCP server over STDIO with validated initialization lifecycle, negotiated stable protocol revisions, safe JSON-RPC errors, structured content, and tracing to stderr;
 - an independently runnable Java 17 worker using Eclipse JDT batch parsing and compiler bindings; and
-- Maven standard-layout and basic multi-module discovery, with local-cache-only safe mode and explicit trusted classpath resolution.
+- bounded safe Maven parent/property/reactor/cache resolution, content-based fingerprints, executable-relative analyzer packaging, derived doctor capabilities, automated graph accuracy evaluation, cross-platform CI/E2E, and a deterministic medium corpus.
 
-Graphine does **not** infer Spring semantics yet. Annotations are generic Java facts and never create beans, routes, repositories, or security conclusions. There is no Gradle support, embedding model, graph database, runtime probe, remote service, or LLM adapter. See the checked-in Phase 2 accuracy and performance reports for measured claims and gaps.
+Graphine does **not** infer Spring semantics yet. Annotations are generic Java facts and never create beans, routes, repositories, or security conclusions. There is no Gradle support, embedding model, graph database, runtime probe, remote service, or LLM adapter. See the checked-in Phase 2/2.5 accuracy and performance reports for measured claims and gaps.
 
 ## Build and run
 
@@ -42,6 +42,9 @@ MCP transport is newline-delimited JSON-RPC over STDIO. Logs go to stderr; proto
 cargo run -p benchmark-core -- validate
 cargo run -p benchmark-core -- stats
 cargo run -p benchmark-core -- report --output benchmarks/reports/corpus.json
+powershell -File scripts/evaluate-java-accuracy.ps1
+powershell -File scripts/test-phase2-e2e.ps1
+powershell -File scripts/benchmark-medium.ps1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

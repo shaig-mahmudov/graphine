@@ -1,0 +1,141 @@
+{
+  "fixture": "java-core",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 21,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "java-core-001",
+      "category": "implementations",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-002",
+      "category": "callees",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-002",
+      "category": "overloads",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-003",
+      "category": "inheritance",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-004",
+      "category": "overrides",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-005",
+      "category": "callers",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-006",
+      "category": "callees",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-007",
+      "category": "constructor_calls",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-008",
+      "category": "field_reads",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-008",
+      "category": "field_writes",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-009",
+      "category": "generic_parameter_resolution",
+      "status": "unsupported",
+      "matched": 0,
+      "expected": 0,
+      "reason": "invocation-site generic return substitution is not stored"
+    },
+    {
+      "question_id": "java-core-010",
+      "category": "records",
+      "status": "unsupported",
+      "matched": 0,
+      "expected": 0,
+      "reason": "record components are not emitted as dedicated graph facts"
+    },
+    {
+      "question_id": "java-core-011",
+      "category": "annotations",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-012",
+      "category": "types",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "java-core-013",
+      "category": "lambdas_method_references",
+      "status": "unsupported",
+      "matched": 0,
+      "expected": 0,
+      "reason": "exact lambda source text is not stored; method-reference targets are only partially supported"
+    },
+    {
+      "question_id": "java-core-014",
+      "category": "unresolved_dependencies",
+      "status": "unsupported",
+      "matched": 0,
+      "expected": 0,
+      "reason": "src/analysis-only is outside the supported Maven source-root contract; java-unresolved is evaluated separately"
+    },
+    {
+      "question_id": "java-core-015",
+      "category": "callees",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "java-core-016",
+      "category": "implementations",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    }
+  ]
+}

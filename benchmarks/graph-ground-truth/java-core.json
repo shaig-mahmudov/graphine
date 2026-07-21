@@ -1,0 +1,35 @@
+{
+  "fixture": "java-core",
+  "expected": [
+    {"question_id":"java-core-001","category":"implementations","event":"edge","source":"type:dev.graphine.fixture.core.UpperFormatter","target":"type:dev.graphine.fixture.core.Formatter","kind":"IMPLEMENTS"},
+    {"question_id":"java-core-001","category":"implementations","event":"edge","source":"type:dev.graphine.fixture.core.LowerFormatter","target":"type:dev.graphine.fixture.core.Formatter","kind":"IMPLEMENTS"},
+    {"question_id":"java-core-002","category":"overloads","event":"node","stable_id":"method:dev.graphine.fixture.core.Operations#combine(java.lang.String,java.lang.String)","kind":"METHOD"},
+    {"question_id":"java-core-002","category":"overloads","event":"node","stable_id":"method:dev.graphine.fixture.core.Operations#combine(int,int)","kind":"METHOD"},
+    {"question_id":"java-core-002","category":"callees","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"method:dev.graphine.fixture.core.Operations#combine(java.lang.String,java.lang.String)","kind":"CALLS"},
+    {"question_id":"java-core-003","category":"inheritance","event":"edge","source":"type:dev.graphine.fixture.core.DecoratingProcessor","target":"type:dev.graphine.fixture.core.BaseProcessor","kind":"EXTENDS"},
+    {"question_id":"java-core-004","category":"overrides","event":"edge","source":"method:dev.graphine.fixture.core.DecoratingProcessor#process(java.lang.String)","target":"method:dev.graphine.fixture.core.BaseProcessor#process(java.lang.String)","kind":"OVERRIDES"},
+    {"question_id":"java-core-005","category":"callers","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"method:dev.graphine.fixture.core.Operations#first(java.util.List)","kind":"CALLS"},
+    {"question_id":"java-core-006","category":"callees","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"method:dev.graphine.fixture.core.Operations.Factory#create()","kind":"CALLS"},
+    {"question_id":"java-core-006","category":"callees","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"method:dev.graphine.fixture.core.DecoratingProcessor#process(java.lang.String)","kind":"CALLS"},
+    {"question_id":"java-core-007","category":"constructor_calls","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"constructor:dev.graphine.fixture.core.Operations.Factory#<init>()","kind":"CONSTRUCTS"},
+    {"question_id":"java-core-007","category":"constructor_calls","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"constructor:dev.graphine.fixture.core.DecoratingProcessor#<init>()","kind":"CONSTRUCTS"},
+    {"question_id":"java-core-008","category":"field_writes","event":"edge","source":"method:dev.graphine.fixture.core.Operations#combine(java.lang.String,java.lang.String)","target":"field:dev.graphine.fixture.core.Operations#invocationCount","kind":"WRITES_FIELD"},
+    {"question_id":"java-core-008","category":"field_writes","event":"edge","source":"method:dev.graphine.fixture.core.Operations#combine(int,int)","target":"field:dev.graphine.fixture.core.Operations#invocationCount","kind":"WRITES_FIELD"},
+    {"question_id":"java-core-008","category":"field_reads","event":"edge","source":"method:dev.graphine.fixture.core.Operations#invocationCount()","target":"field:dev.graphine.fixture.core.Operations#invocationCount","kind":"READS_FIELD"},
+    {"question_id":"java-core-011","category":"annotations","event":"edge","source":"type:dev.graphine.fixture.core.Operations","target":"type:dev.graphine.fixture.core.FixtureTag","kind":"ANNOTATED_BY"},
+    {"question_id":"java-core-012","category":"types","event":"node","stable_id":"type:dev.graphine.fixture.core.Operations.Pair","kind":"TYPE"},
+    {"question_id":"java-core-012","category":"types","event":"node","stable_id":"type:dev.graphine.fixture.core.Operations.Factory","kind":"TYPE"},
+    {"question_id":"java-core-015","category":"callees","event":"edge","source":"method:dev.graphine.fixture.core.BaseProcessor#process(java.lang.String)","target":"method:dev.graphine.fixture.core.BaseProcessor#normalize(java.lang.String)","kind":"CALLS"},
+    {"question_id":"java-core-016","category":"implementations","event":"edge","source":"type:dev.graphine.fixture.core.UpperFormatter","target":"type:dev.graphine.fixture.core.Formatter","kind":"IMPLEMENTS"},
+    {"question_id":"java-core-016","category":"implementations","event":"edge","source":"type:dev.graphine.fixture.core.LowerFormatter","target":"type:dev.graphine.fixture.core.Formatter","kind":"IMPLEMENTS"}
+  ],
+  "forbidden": [
+    {"question_id":"java-core-002","category":"overloads","event":"edge","source":"method:dev.graphine.fixture.core.CoreScenario#run()","target":"method:dev.graphine.fixture.core.Operations#combine(int,int)","kind":"CALLS"}
+  ],
+  "unsupported_questions": [
+    {"question_id":"java-core-009","category":"generic_parameter_resolution","reason":"invocation-site generic return substitution is not stored"},
+    {"question_id":"java-core-010","category":"records","reason":"record components are not emitted as dedicated graph facts"},
+    {"question_id":"java-core-013","category":"lambdas_method_references","reason":"exact lambda source text is not stored; method-reference targets are only partially supported"},
+    {"question_id":"java-core-014","category":"unresolved_dependencies","reason":"src/analysis-only is outside the supported Maven source-root contract; java-unresolved is evaluated separately"}
+  ]
+}

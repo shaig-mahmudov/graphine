@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
-use benchmark_core::{Corpus, validate_report, write_report};
+use benchmark_core::{
+    Corpus, evaluate_graph_jsonl, generate_medium_corpus, validate_report,
+    write_graph_accuracy_report, write_report,
+};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -36,14 +39,70 @@ fn main() -> Result<()> {
             write_report(&path, &report)?;
             println!("wrote {}", path.display());
         }
+        "evaluate-java" => {
+            expect_flag(&mut args, "--input")?;
+            let input = resolve_output(&root, &args.next().context("--input requires a path")?);
+            expect_flag(&mut args, "--truth")?;
+            let truth = resolve_output(&root, &args.next().context("--truth requires a path")?);
+            expect_flag(&mut args, "--output")?;
+            let output = resolve_output(&root, &args.next().context("--output requires a path")?);
+            expect_flag(&mut args, "--min-precision")?;
+            let min_precision: f64 = args
+                .next()
+                .context("--min-precision requires a number")?
+                .parse()
+                .context("invalid precision threshold")?;
+            expect_flag(&mut args, "--min-recall")?;
+            let min_recall: f64 = args
+                .next()
+                .context("--min-recall requires a number")?
+                .parse()
+                .context("invalid recall threshold")?;
+            reject_extra_args(args)?;
+            let report = evaluate_graph_jsonl(&input, &truth)?;
+            write_graph_accuracy_report(&output, &report)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.precision < min_precision || report.recall < min_recall {
+                bail!(
+                    "graph accuracy regression: precision {:.4} (min {:.4}), recall {:.4} (min {:.4})",
+                    report.precision,
+                    min_precision,
+                    report.recall,
+                    min_recall
+                );
+            }
+        }
+        "generate-medium" => {
+            expect_flag(&mut args, "--output")?;
+            let output = resolve_output(&root, &args.next().context("--output requires a path")?);
+            expect_flag(&mut args, "--types")?;
+            let types: usize = args
+                .next()
+                .context("--types requires a number")?
+                .parse()
+                .context("invalid type count")?;
+            reject_extra_args(args)?;
+            generate_medium_corpus(&output, types)?;
+            println!("generated {types} types at {}", output.display());
+        }
         _ => {
             eprintln!(
-                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>"
+                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core generate-medium --output <path> --types <n>"
             );
             if command != "help" && command != "--help" && command != "-h" {
                 bail!("unknown command: {command}");
             }
         }
+    }
+    Ok(())
+}
+
+fn expect_flag(args: &mut impl Iterator<Item = String>, expected: &str) -> Result<()> {
+    let actual = args
+        .next()
+        .with_context(|| format!("expected {expected}"))?;
+    if actual != expected {
+        bail!("expected {expected}, found {actual}");
     }
     Ok(())
 }

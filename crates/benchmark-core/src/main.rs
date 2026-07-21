@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
-    Corpus, evaluate_graph_jsonl, generate_medium_corpus, generate_spring_medium_corpus,
-    validate_report, write_graph_accuracy_report, write_report,
+    Corpus, compare_agent_sessions, evaluate_graph_jsonl, generate_medium_corpus,
+    generate_spring_medium_corpus, load_agent_session, validate_report,
+    write_agent_comparison_report, write_graph_accuracy_report, write_report,
 };
 use std::env;
 use std::path::{Path, PathBuf};
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".to_owned());
@@ -88,9 +90,29 @@ fn main() -> Result<()> {
         "generate-spring-medium" => {
             generate_spring_medium_command(&mut args, &root)?;
         }
+        "compare-agents" => {
+            expect_flag(&mut args, "--baseline")?;
+            let baseline =
+                resolve_output(&root, &args.next().context("--baseline requires a path")?);
+            expect_flag(&mut args, "--graphine")?;
+            let graphine =
+                resolve_output(&root, &args.next().context("--graphine requires a path")?);
+            expect_flag(&mut args, "--output")?;
+            let output = resolve_output(&root, &args.next().context("--output requires a path")?);
+            reject_extra_args(args)?;
+            let corpus = Corpus::load(&root)?;
+            let report = compare_agent_sessions(
+                &root,
+                &corpus,
+                &load_agent_session(&baseline)?,
+                &load_agent_session(&graphine)?,
+            )?;
+            write_agent_comparison_report(&output, &report)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         _ => {
             eprintln!(
-                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core generate-medium --output <path> --types <n>\n  benchmark-core generate-spring-medium --output <path> --controllers <n>"
+                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core compare-agents --baseline <session.json> --graphine <session.json> --output <report.json>\n  benchmark-core generate-medium --output <path> --types <n>\n  benchmark-core generate-spring-medium --output <path> --controllers <n>"
             );
             if command != "help" && command != "--help" && command != "-h" {
                 bail!("unknown command: {command}");

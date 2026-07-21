@@ -33,7 +33,7 @@ fn default_support() -> String {
     "phase-0".to_owned()
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Evidence {
     pub file: String,
     pub start_line: u64,
@@ -79,7 +79,7 @@ pub struct RunReport {
     pub metrics: Metrics,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct Metrics {
     pub correctness: Option<f64>,
     pub precision: Option<f64>,
@@ -89,10 +89,96 @@ pub struct Metrics {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub tool_calls: Option<u64>,
+    pub graphine_calls: Option<u64>,
+    pub file_searches: Option<u64>,
     pub file_reads: Option<u64>,
     pub files_opened: Option<u64>,
+    pub evidence_lines_read: Option<u64>,
     pub wall_time_ms: Option<u64>,
     pub query_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSession {
+    pub schema_version: String,
+    pub mode: String,
+    pub controls: AgentControls,
+    pub runs: Vec<AgentQuestionRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentControls {
+    pub model: String,
+    pub system_prompt_hash: String,
+    pub repository_commit: String,
+    pub repository_dirty_digest: String,
+    pub time_limit_ms: u64,
+    pub maximum_tool_calls: u64,
+    pub deterministic_settings: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentQuestionRun {
+    pub question_id: String,
+    pub answer: String,
+    #[serde(default)]
+    pub claims: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
+    pub uncertainty_reported: bool,
+    pub metrics: Metrics,
+    #[serde(default)]
+    pub human_review: Option<f64>,
+    #[serde(default)]
+    pub llm_judge: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgentComparisonReport {
+    pub schema_version: String,
+    pub controls_match: bool,
+    pub paired_questions: usize,
+    pub baseline: AgentAggregate,
+    pub graphine: AgentAggregate,
+    pub paired_reductions: PairedReductions,
+    pub targets: BTreeMap<String, bool>,
+    pub results: Vec<AgentQuestionResult>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct AgentAggregate {
+    pub correctness: f64,
+    pub unsupported_claims: u64,
+    pub median_input_tokens: Option<u64>,
+    pub median_tool_calls: Option<u64>,
+    pub median_file_reads: Option<u64>,
+    pub median_files_opened: Option<u64>,
+    pub median_evidence_lines_read: Option<u64>,
+    pub median_wall_time_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PairedReductions {
+    pub median_input_tokens_percent: Option<f64>,
+    pub median_tool_calls_percent: Option<f64>,
+    pub median_file_reads_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AgentQuestionResult {
+    pub question_id: String,
+    pub baseline_correct: bool,
+    pub graphine_correct: bool,
+    pub baseline_unsupported_claims: u64,
+    pub graphine_unsupported_claims: u64,
+    pub baseline_evidence_verified: bool,
+    pub graphine_evidence_verified: bool,
+    pub required_claims: Vec<String>,
+    pub forbidden_claims: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -313,12 +399,385 @@ fn bounded_ratio(numerator: usize, denominator: usize) -> f64 {
     f64::from(numerator) / f64::from(denominator)
 }
 
+/// Compares paired baseline and Graphine agent traces with deterministic claims,
+/// forbidden-claim checks, evidence validation, and uncertainty requirements.
+/// Optional human and LLM scores are captured but never determine correctness.
+///
+/// # Errors
+///
+/// Returns an error when controls, modes, question pairing, or evidence paths are invalid.
+#[allow(clippy::too_many_lines)]
+pub fn compare_agent_sessions(
+    repository_root: &Path,
+    corpus: &Corpus,
+    baseline: &AgentSession,
+    graphine: &AgentSession,
+) -> Result<AgentComparisonReport> {
+    let schema_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .context("benchmark-core must live in the Graphine workspace")?;
+    let session_schema =
+        load_schema(&schema_root.join("benchmarks/schema/agent-session.schema.json"))?;
+    let session_validator = jsonschema::validator_for(&session_schema)
+        .context("failed to compile agent-session schema")?;
+    for session in [baseline, graphine] {
+        session_validator
+            .validate(&serde_json::to_value(session)?)
+            .map_err(|error| anyhow!("agent-session schema validation failed: {error}"))?;
+    }
+    if baseline.schema_version != "1.0.0" || graphine.schema_version != "1.0.0" {
+        bail!("unsupported agent session schema");
+    }
+    if baseline.mode != "baseline" || graphine.mode != "graphine" {
+        bail!("expected baseline and graphine session modes");
+    }
+    let controls_match = baseline.controls == graphine.controls;
+    if !controls_match {
+        bail!("paired session controls do not match");
+    }
+    let baseline_runs: BTreeMap<_, _> = baseline
+        .runs
+        .iter()
+        .map(|run| (run.question_id.as_str(), run))
+        .collect();
+    let graphine_runs: BTreeMap<_, _> = graphine
+        .runs
+        .iter()
+        .map(|run| (run.question_id.as_str(), run))
+        .collect();
+    if baseline_runs.len() != baseline.runs.len() || graphine_runs.len() != graphine.runs.len() {
+        bail!("duplicate question IDs in agent session");
+    }
+    let truth_by_id: BTreeMap<_, _> = corpus
+        .ground_truth
+        .iter()
+        .map(|truth| (truth.question_id.as_str(), truth))
+        .collect();
+    let mut results = Vec::new();
+    for question in &corpus.questions {
+        let Some(baseline_run) = baseline_runs.get(question.id.as_str()) else {
+            continue;
+        };
+        let Some(graphine_run) = graphine_runs.get(question.id.as_str()) else {
+            continue;
+        };
+        let truth = truth_by_id
+            .get(question.id.as_str())
+            .context("question has no ground truth")?;
+        let fixture_root = repository_root.join("fixtures").join(&question.fixture);
+        let evidence_root = if fixture_root.is_dir() {
+            fixture_root.as_path()
+        } else {
+            repository_root
+        };
+        let required_claims = flatten_claims(&truth.expected);
+        let (baseline_correct, baseline_unsupported, baseline_evidence) =
+            score_agent_run(evidence_root, baseline_run, truth, &required_claims)?;
+        let (graphine_correct, graphine_unsupported, graphine_evidence) =
+            score_agent_run(evidence_root, graphine_run, truth, &required_claims)?;
+        results.push(AgentQuestionResult {
+            question_id: question.id.clone(),
+            baseline_correct,
+            graphine_correct,
+            baseline_unsupported_claims: baseline_unsupported,
+            graphine_unsupported_claims: graphine_unsupported,
+            baseline_evidence_verified: baseline_evidence,
+            graphine_evidence_verified: graphine_evidence,
+            required_claims,
+            forbidden_claims: truth.forbidden_claims.clone(),
+        });
+    }
+    if results.is_empty() {
+        bail!("agent sessions have no paired corpus questions");
+    }
+    let baseline_aggregate = aggregate_agent(&results, &baseline_runs, true);
+    let graphine_aggregate = aggregate_agent(&results, &graphine_runs, false);
+    let reductions = paired_reductions(&results, &baseline_runs, &graphine_runs);
+    let mut targets = BTreeMap::new();
+    targets.insert(
+        "median_input_token_reduction_at_least_60_percent".to_owned(),
+        reductions
+            .median_input_tokens_percent
+            .is_some_and(|value| value >= 60.0),
+    );
+    targets.insert(
+        "median_file_read_reduction_at_least_70_percent".to_owned(),
+        reductions
+            .median_file_reads_percent
+            .is_some_and(|value| value >= 70.0),
+    );
+    targets.insert(
+        "median_tool_call_reduction_at_least_40_percent".to_owned(),
+        reductions
+            .median_tool_calls_percent
+            .is_some_and(|value| value >= 40.0),
+    );
+    targets.insert(
+        "correctness_no_worse_than_baseline".to_owned(),
+        graphine_aggregate.correctness >= baseline_aggregate.correctness,
+    );
+    targets.insert(
+        "unsupported_deterministic_claims_zero".to_owned(),
+        graphine_aggregate.unsupported_claims == 0,
+    );
+    Ok(AgentComparisonReport {
+        schema_version: "1.0.0".to_owned(),
+        controls_match,
+        paired_questions: results.len(),
+        baseline: baseline_aggregate,
+        graphine: graphine_aggregate,
+        paired_reductions: reductions,
+        targets,
+        results,
+    })
+}
+
+fn score_agent_run(
+    repository_root: &Path,
+    run: &AgentQuestionRun,
+    truth: &GroundTruth,
+    required_claims: &[String],
+) -> Result<(bool, u64, bool)> {
+    let claims: BTreeSet<_> = run
+        .claims
+        .iter()
+        .map(|claim| claim.trim().to_owned())
+        .collect();
+    let unsupported = truth
+        .forbidden_claims
+        .iter()
+        .filter(|forbidden| {
+            claims
+                .iter()
+                .any(|claim| claim.eq_ignore_ascii_case(forbidden))
+                || run
+                    .answer
+                    .to_ascii_lowercase()
+                    .contains(&forbidden.to_ascii_lowercase())
+        })
+        .count() as u64;
+    let evidence_verified = verify_evidence(repository_root, &run.evidence, &truth.evidence)?;
+    let uncertainty_required =
+        truth.status != "answerable" || !truth.allowed_ambiguities.is_empty();
+    let correct = required_claims
+        .iter()
+        .all(|required| claims.contains(required))
+        && unsupported == 0
+        && (!uncertainty_required || run.uncertainty_reported)
+        && evidence_verified;
+    Ok((correct, unsupported, evidence_verified))
+}
+
+fn verify_evidence(
+    repository_root: &Path,
+    actual: &[Evidence],
+    expected: &[Evidence],
+) -> Result<bool> {
+    if expected.is_empty() {
+        return Ok(actual.is_empty()
+            || actual
+                .iter()
+                .all(|item| valid_evidence(repository_root, item).unwrap_or(false)));
+    }
+    if actual.is_empty() {
+        return Ok(false);
+    }
+    for item in actual {
+        if !valid_evidence(repository_root, item)? {
+            return Ok(false);
+        }
+    }
+    Ok(expected.iter().all(|required| {
+        actual.iter().any(|item| {
+            item.file == required.file
+                && item.start_line <= required.end_line
+                && item.end_line >= required.start_line
+        })
+    }))
+}
+
+fn valid_evidence(repository_root: &Path, evidence: &Evidence) -> Result<bool> {
+    if evidence.start_line == 0 || evidence.end_line < evidence.start_line {
+        return Ok(false);
+    }
+    let relative = Path::new(&evidence.file);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Ok(false);
+    }
+    let root = repository_root.canonicalize()?;
+    let Ok(path) = root.join(relative).canonicalize() else {
+        return Ok(false);
+    };
+    if !path.starts_with(&root) || !path.is_file() {
+        return Ok(false);
+    }
+    let line_count = fs::read_to_string(path)?.lines().count() as u64;
+    Ok(evidence.end_line <= line_count)
+}
+
+fn flatten_claims(value: &Value) -> Vec<String> {
+    fn walk(prefix: &str, value: &Value, output: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                for (key, nested) in object {
+                    let next = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(&next, nested, output);
+                }
+            }
+            Value::Array(values) => {
+                for nested in values {
+                    walk(&format!("{prefix}[]"), nested, output);
+                }
+            }
+            Value::String(text) => output.push(format!("{prefix}={text}")),
+            other => output.push(format!("{prefix}={other}")),
+        }
+    }
+    let mut output = Vec::new();
+    walk("", value, &mut output);
+    output.sort();
+    output
+}
+
+fn aggregate_agent(
+    results: &[AgentQuestionResult],
+    runs: &BTreeMap<&str, &AgentQuestionRun>,
+    baseline: bool,
+) -> AgentAggregate {
+    let selected: Vec<_> = results
+        .iter()
+        .filter_map(|result| runs.get(result.question_id.as_str()).copied())
+        .collect();
+    let correct = results
+        .iter()
+        .filter(|result| {
+            if baseline {
+                result.baseline_correct
+            } else {
+                result.graphine_correct
+            }
+        })
+        .count();
+    AgentAggregate {
+        correctness: bounded_ratio(correct, results.len()),
+        unsupported_claims: results
+            .iter()
+            .map(|result| {
+                if baseline {
+                    result.baseline_unsupported_claims
+                } else {
+                    result.graphine_unsupported_claims
+                }
+            })
+            .sum(),
+        median_input_tokens: median_optional(selected.iter().map(|run| run.metrics.input_tokens)),
+        median_tool_calls: median_optional(selected.iter().map(|run| run.metrics.tool_calls)),
+        median_file_reads: median_optional(selected.iter().map(|run| run.metrics.file_reads)),
+        median_files_opened: median_optional(selected.iter().map(|run| run.metrics.files_opened)),
+        median_evidence_lines_read: median_optional(
+            selected.iter().map(|run| run.metrics.evidence_lines_read),
+        ),
+        median_wall_time_ms: median_optional(selected.iter().map(|run| run.metrics.wall_time_ms)),
+    }
+}
+
+fn paired_reductions(
+    results: &[AgentQuestionResult],
+    baseline: &BTreeMap<&str, &AgentQuestionRun>,
+    graphine: &BTreeMap<&str, &AgentQuestionRun>,
+) -> PairedReductions {
+    let pairs = results
+        .iter()
+        .filter_map(|result| {
+            Some((
+                baseline.get(result.question_id.as_str())?,
+                graphine.get(result.question_id.as_str())?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    PairedReductions {
+        median_input_tokens_percent: median_reduction(
+            pairs
+                .iter()
+                .map(|(left, right)| (left.metrics.input_tokens, right.metrics.input_tokens)),
+        ),
+        median_tool_calls_percent: median_reduction(
+            pairs
+                .iter()
+                .map(|(left, right)| (left.metrics.tool_calls, right.metrics.tool_calls)),
+        ),
+        median_file_reads_percent: median_reduction(
+            pairs
+                .iter()
+                .map(|(left, right)| (left.metrics.file_reads, right.metrics.file_reads)),
+        ),
+    }
+}
+
+fn median_optional(values: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    let mut values: Vec<_> = values.flatten().collect();
+    values.sort_unstable();
+    values.get(values.len() / 2).copied()
+}
+
+fn median_reduction(values: impl Iterator<Item = (Option<u64>, Option<u64>)>) -> Option<f64> {
+    let mut values: Vec<_> = values
+        .filter_map(|(baseline, graphine)| {
+            let baseline = baseline?;
+            let graphine = graphine?;
+            if baseline == 0 {
+                return None;
+            }
+            let baseline = f64::from(u32::try_from(baseline).unwrap_or(u32::MAX));
+            let graphine = f64::from(u32::try_from(graphine).unwrap_or(u32::MAX));
+            Some(100.0 * (baseline - graphine) / baseline)
+        })
+        .collect();
+    values.sort_by(f64::total_cmp);
+    values.get(values.len() / 2).copied()
+}
+
 /// Writes a deterministic graph accuracy report.
 ///
 /// # Errors
 ///
 /// Returns an error if the destination cannot be written.
 pub fn write_graph_accuracy_report(path: &Path, report: &GraphAccuracyReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut output = serde_json::to_string_pretty(report)?;
+    output.push('\n');
+    fs::write(path, output).with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// Loads a captured baseline or Graphine agent session.
+///
+/// # Errors
+///
+/// Returns an error for unreadable or malformed JSON.
+pub fn load_agent_session(path: &Path) -> Result<AgentSession> {
+    serde_json::from_str(
+        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("malformed agent session {}", path.display()))
+}
+
+/// Writes a deterministic aggregate paired-agent comparison.
+///
+/// # Errors
+///
+/// Returns an error when the destination cannot be written.
+pub fn write_agent_comparison_report(path: &Path, report: &AgentComparisonReport) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -890,5 +1349,73 @@ mod tests {
                 .is_file()
         );
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn paired_agent_evaluation_captures_reductions_and_requires_uncertainty() {
+        let root = std::env::temp_dir().join(format!("graphine-agent-eval-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Sample.java"), "one\ntwo\nthree\n").unwrap();
+        let mut ground_truth = truth("q-1");
+        ground_truth.expected = serde_json::json!({"answer":"target"});
+        ground_truth.evidence = vec![Evidence {
+            file: "Sample.java".to_owned(),
+            start_line: 1,
+            end_line: 2,
+        }];
+        ground_truth.allowed_ambiguities = vec!["runtime target may differ".to_owned()];
+        let corpus = Corpus {
+            questions: vec![question("q-1")],
+            ground_truth: vec![ground_truth],
+        };
+        let controls = AgentControls {
+            model: "same-model".to_owned(),
+            system_prompt_hash: "prompt".to_owned(),
+            repository_commit: "abc".to_owned(),
+            repository_dirty_digest: "clean".to_owned(),
+            time_limit_ms: 10_000,
+            maximum_tool_calls: 20,
+            deterministic_settings: serde_json::json!({"temperature":0}),
+        };
+        let make = |mode: &str, input_tokens, tool_calls, file_reads| AgentSession {
+            schema_version: "1.0.0".to_owned(),
+            mode: mode.to_owned(),
+            controls: controls.clone(),
+            runs: vec![AgentQuestionRun {
+                question_id: "q-1".to_owned(),
+                answer: "target, with runtime uncertainty".to_owned(),
+                claims: vec!["answer=target".to_owned()],
+                evidence: vec![Evidence {
+                    file: "Sample.java".to_owned(),
+                    start_line: 1,
+                    end_line: 2,
+                }],
+                uncertainty_reported: true,
+                metrics: Metrics {
+                    input_tokens: Some(input_tokens),
+                    tool_calls: Some(tool_calls),
+                    file_reads: Some(file_reads),
+                    files_opened: Some(file_reads),
+                    evidence_lines_read: Some(2),
+                    ..Metrics::default()
+                },
+                human_review: None,
+                llm_judge: None,
+            }],
+        };
+        let report = compare_agent_sessions(
+            &root,
+            &corpus,
+            &make("baseline", 1000, 10, 10),
+            &make("graphine", 300, 4, 2),
+        )
+        .unwrap();
+        assert!((report.baseline.correctness - 1.0).abs() < f64::EPSILON);
+        assert!((report.graphine.correctness - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            report.paired_reductions.median_input_tokens_percent,
+            Some(70.0)
+        );
+        assert!(report.targets["median_file_read_reduction_at_least_70_percent"]);
     }
 }

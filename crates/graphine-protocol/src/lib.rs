@@ -397,16 +397,58 @@ pub struct ResponseEnvelope {
     pub generation: Option<i64>,
     pub stale: bool,
     pub partial: bool,
+    #[serde(default)]
+    pub completeness: Completeness,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub result: Value,
     pub complete: bool,
+    #[serde(default = "empty_object", skip_serializing_if = "Value::is_null")]
     pub summary: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub facts: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ambiguities: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_default_uncertainty")]
     pub uncertainty: UncertaintyState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<EvidenceRef>,
     pub pagination: Pagination,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_actions: Vec<Value>,
     pub budget: Budget,
+    #[serde(default, skip_serializing_if = "is_default_truncation")]
     pub truncation: TruncationState,
+}
+
+fn is_default_uncertainty(value: &UncertaintyState) -> bool {
+    value == &UncertaintyState::default()
+}
+
+fn is_default_truncation(value: &TruncationState) -> bool {
+    value == &TruncationState::default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Completeness {
+    pub status: String,
+    pub scope: String,
+    pub facts_truncated: bool,
+    pub evidence_truncated: bool,
+    pub uncertainty_truncated: bool,
+}
+
+impl Default for Completeness {
+    fn default() -> Self {
+        Self {
+            status: "complete".to_owned(),
+            scope: "requested scope".to_owned(),
+            facts_truncated: false,
+            evidence_truncated: false,
+            uncertainty_truncated: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +497,9 @@ pub struct GraphineConfig {
     pub maximum_token_budget: u32,
     pub maximum_query_depth: u32,
     pub maximum_result_count: u32,
+    pub maximum_evidence_lines: u32,
+    pub maximum_evidence_bytes: usize,
+    pub evidence_excluded_paths: Vec<String>,
     pub allowed_repository_roots: Vec<PathBuf>,
     pub sqlite_timeout_ms: u64,
     pub mcp_transport: String,
@@ -475,6 +520,9 @@ impl Default for GraphineConfig {
             maximum_token_budget: 4_000,
             maximum_query_depth: 5,
             maximum_result_count: 100,
+            maximum_evidence_lines: 200,
+            maximum_evidence_bytes: 64 * 1024,
+            evidence_excluded_paths: Vec::new(),
             allowed_repository_roots: Vec::new(),
             sqlite_timeout_ms: 5_000,
             mcp_transport: "stdio".to_owned(),
@@ -515,6 +563,8 @@ impl GraphineConfig {
             || self.default_token_budget > self.maximum_token_budget
             || self.maximum_query_depth == 0
             || self.maximum_result_count == 0
+            || self.maximum_evidence_lines == 0
+            || self.maximum_evidence_bytes < 1024
             || self.sqlite_timeout_ms == 0
             || self.mcp_transport != "stdio"
             || self.analyzer_timeout_ms == 0

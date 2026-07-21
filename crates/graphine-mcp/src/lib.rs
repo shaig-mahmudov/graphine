@@ -151,7 +151,9 @@ impl McpServer {
             "get_project_map" => service.get_project_map(&decode(arguments)?)?,
             "search_symbol" => service.search_symbol(&decode(arguments)?)?,
             "get_symbol_context" => service.get_symbol_context(&decode(arguments)?)?,
+            "get_endpoint_context" => service.get_endpoint_context(&decode(arguments)?)?,
             "trace_flow" => service.trace_flow(&decode(arguments)?)?,
+            "get_evidence" => service.get_evidence(&decode(arguments)?)?,
             "index_status" => service.index_status(&decode(arguments)?)?,
             _ => return Err(GraphineError::InvalidArgument("unknown tool".to_owned())),
         };
@@ -248,39 +250,56 @@ fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
             "get_project_map",
-            "Compact active graph summary",
+            "Returns a compact application map with major packages and Spring role counts. Use first when orienting in a project.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project"],
-                "properties":{"project":{"type":"string"},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"scope":{"enum":["application"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
             "search_symbol",
-            "Deterministic lexical symbol search",
+            "Finds likely symbols or routes with deterministic lexical and structural ranking. Use to disambiguate a human name before requesting context.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","query"],
-                "properties":{"project":{"type":"string"},"query":{"type":"string"},"kinds":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"query":{"type":"string"},"kinds":{"type":"array","items":{"type":"string"}},"framework_roles":{"type":"array","items":{"type":"string"}},"module":{"type":"string"},"package_prefix":{"type":"string"},"limit":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
             "get_symbol_context",
-            "Direct inbound and outbound symbol context",
+            "Returns semantically grouped callers, callees, injections, data access, routes, events, tests, and evidence for one symbol.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","stable_id"],
-                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"include":{"type":"array","items":{"enum":["callers","callees","injections","data_access","routes","events","tests"]}},"depth":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+            }),
+        ),
+        tool(
+            "get_endpoint_context",
+            "Returns static Spring flow, data access, validation, events, dependencies, and evidence for one HTTP endpoint. Use before reading controller or service files.",
+            json!({
+                "type":"object","additionalProperties":false,"required":["project"],
+                "properties":{"project":{"type":"string"},"route_stable_id":{"type":"string"},"method":{"type":"string"},"path":{"type":"string"},"controller_method_stable_id":{"type":"string"},"max_depth":{"type":"integer","minimum":1},"include":{"type":"array","items":{"enum":["validation","dependencies","data_access","events","configuration"]}},"suppression_policy":{"enum":["agent-default-v1","none"]},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}},
+                "oneOf":[{"required":["route_stable_id"]},{"required":["method","path"]},{"required":["controller_method_stable_id"]}]
             }),
         ),
         tool(
             "trace_flow",
-            "Bounded direct graph traversal",
+            "Returns bounded grouped graph paths when symbol or endpoint context is insufficient. Supports application-only shortest or bounded all-path traversal.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","start_stable_id"],
-                "properties":{"project":{"type":"string"},"start_stable_id":{"type":"string"},"direction":{"enum":["inbound","outbound"]},"edge_kinds":{"type":"array","items":{"type":"string"}},"max_depth":{"type":"integer","minimum":1},"max_nodes":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"start_stable_id":{"type":"string"},"direction":{"enum":["inbound","outbound"]},"edge_kinds":{"type":"array","items":{"type":"string"}},"edge_groups":{"type":"array","items":{"enum":["calls","data_access","events","dependencies","routes"]}},"node_kinds":{"type":"array","items":{"type":"string"}},"application_only":{"type":"boolean"},"suppress_external":{"type":"boolean"},"mode":{"enum":["shortest_path","all_paths_bounded"]},"max_depth":{"type":"integer","minimum":1},"max_nodes":{"type":"integer","minimum":1},"max_paths":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}}
+            }),
+        ),
+        tool(
+            "get_evidence",
+            "Returns bounded line-numbered source snippets for Graphine evidence IDs or validated repository-relative ranges. Use only to verify selected claims.",
+            json!({
+                "type":"object","additionalProperties":false,"required":["project","references"],
+                "properties":{"project":{"type":"string"},"references":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"},"file":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"oneOf":[{"required":["id"]},{"required":["file","start_line","end_line"]}]}},"context_lines":{"type":"integer","minimum":0,"maximum":20},"max_total_lines":{"type":"integer","minimum":1},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
             "index_status",
-            "Project generation and stale status",
+            "Returns generation freshness, analyzer capabilities, diagnostic counts, source sets, exclusions, and unsupported areas without listing every diagnostic.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project"],
                 "properties":{"project":{"type":"string"},"token_budget":{"type":"integer","minimum":128}}
@@ -339,16 +358,51 @@ mod tests {
                 metadata: json!({}),
                 unresolved: Vec::new(),
             },
+            SyntheticNode {
+                stable_id: "route:POST:/create".to_owned(),
+                kind: "ROUTE".to_owned(),
+                qualified_name: "POST /create".to_owned(),
+                simple_name: Some("create".to_owned()),
+                module_name: Some("app".to_owned()),
+                package_name: Some("example".to_owned()),
+                file_path: Some("Controller.java".to_owned()),
+                start_line: Some(1),
+                end_line: Some(1),
+                confidence: Confidence::FrameworkResolved,
+                provenance: "test".to_owned(),
+                metadata: json!({"http_method":"POST","path":"/create","handler_parameters":[]}),
+                unresolved: Vec::new(),
+            },
         ];
-        let edges = vec![SyntheticEdge {
-            source_stable_id: "type:example.Controller".to_owned(),
-            target_stable_id: "method:example.Controller#create()".to_owned(),
-            kind: "DECLARES".to_owned(),
-            confidence: Confidence::CompilerResolved,
-            provenance: "test".to_owned(),
-            metadata: json!({}),
-            occurrences: Vec::new(),
-        }];
+        let edges = vec![
+            SyntheticEdge {
+                source_stable_id: "type:example.Controller".to_owned(),
+                target_stable_id: "method:example.Controller#create()".to_owned(),
+                kind: "DECLARES".to_owned(),
+                confidence: Confidence::CompilerResolved,
+                provenance: "test".to_owned(),
+                metadata: json!({}),
+                occurrences: Vec::new(),
+            },
+            SyntheticEdge {
+                source_stable_id: "type:example.Controller".to_owned(),
+                target_stable_id: "route:POST:/create".to_owned(),
+                kind: "EXPOSES_ROUTE".to_owned(),
+                confidence: Confidence::FrameworkResolved,
+                provenance: "test".to_owned(),
+                metadata: json!({}),
+                occurrences: Vec::new(),
+            },
+            SyntheticEdge {
+                source_stable_id: "route:POST:/create".to_owned(),
+                target_stable_id: "method:example.Controller#create()".to_owned(),
+                kind: "HANDLED_BY".to_owned(),
+                confidence: Confidence::FrameworkResolved,
+                provenance: "test".to_owned(),
+                metadata: json!({}),
+                occurrences: Vec::new(),
+            },
+        ];
         database
             .load_synthetic(
                 "mcp-fixture",
@@ -359,7 +413,11 @@ mod tests {
                 },
             )
             .unwrap();
-        McpServer::new(database, GraphineConfig::default())
+        let config = GraphineConfig {
+            maximum_result_count: 1,
+            ..GraphineConfig::default()
+        };
+        McpServer::new(database, config)
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -410,7 +468,7 @@ mod tests {
             .handle_value(request(2, "tools/list", json!({})))
             .unwrap();
         assert_eq!(first, second);
-        assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 7);
         let context_schema = first["result"]["tools"]
             .as_array()
             .unwrap()
@@ -486,8 +544,16 @@ mod tests {
                 json!({"project":"mcp-fixture","stable_id":"type:example.Controller","token_budget":800}),
             ),
             (
+                "get_endpoint_context",
+                json!({"project":"mcp-fixture","method":"POST","path":"/create","token_budget":800}),
+            ),
+            (
                 "trace_flow",
                 json!({"project":"mcp-fixture","start_stable_id":"type:example.Controller","token_budget":800}),
+            ),
+            (
+                "get_evidence",
+                json!({"project":"mcp-fixture","references":[{"file":"Controller.java","start_line":1,"end_line":1}],"token_budget":800}),
             ),
             (
                 "index_status",

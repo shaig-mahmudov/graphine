@@ -1,0 +1,13 @@
+{
+  "ambiguity_count": 1,
+  "completeness": "ambiguous",
+  "data_writes": ["app.event.Event"],
+  "endpoint": {
+    "confidence": "AMBIGUOUS",
+    "method": "POST",
+    "path": "/events"
+  },
+  "event_kinds": ["PUBLISHES_EVENT"],
+  "handler_count": 2,
+  "suppression_policy": "agent-default-v1"
+}

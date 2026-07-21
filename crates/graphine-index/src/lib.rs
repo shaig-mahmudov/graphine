@@ -5,7 +5,7 @@ use graphine_protocol::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -214,6 +214,24 @@ pub struct GraphSummary {
     pub modules: Vec<String>,
     pub packages: Vec<String>,
     pub unresolved_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageMetric {
+    pub package: String,
+    pub framework_components: u64,
+    pub internal_edges: u64,
+    pub routes: u64,
+    pub repositories: u64,
+    pub entities: u64,
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EvidenceLocation {
+    pub file_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1024,6 +1042,270 @@ impl Database {
                     })
                 },
             )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)
+    }
+
+    /// Fetches active nodes in stable-ID order for bounded semantic query assembly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn nodes_by_kind(
+        &self,
+        status: &IndexStatus,
+        kinds: &[String],
+        limit: u32,
+    ) -> Result<Vec<NodeRecord>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+             FROM nodes WHERE project_id=?1 AND generation=?2 ORDER BY stable_id LIMIT ?3",
+        ).map_err(db_error)?;
+        let nodes = statement
+            .query_map(
+                params![status.project.id.as_str(), generation, limit],
+                node_from_row,
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok(if kinds.is_empty() {
+            nodes
+        } else {
+            nodes
+                .into_iter()
+                .filter(|node| {
+                    kinds
+                        .iter()
+                        .any(|kind| kind.eq_ignore_ascii_case(&node.kind))
+                })
+                .collect()
+        })
+    }
+
+    /// Fetches one node using an already validated active-generation status.
+    ///
+    /// # Errors
+    ///
+    /// Returns `symbol_not_found` or a database error.
+    pub fn node_in_status(
+        &self,
+        status: &IndexStatus,
+        stable_id: &str,
+    ) -> Result<NodeRecord, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        self.connection
+            .query_row(
+                "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+                 FROM nodes WHERE project_id=?1 AND generation=?2 AND stable_id=?3",
+                params![status.project.id.as_str(), generation, stable_id],
+                node_from_row,
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or(GraphineError::SymbolNotFound)
+    }
+
+    /// Returns deterministic application-area metrics without exposing every package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn package_metrics(
+        &self,
+        status: &IndexStatus,
+        limit: u32,
+    ) -> Result<Vec<PackageMetric>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT n.package_name,
+                    SUM(CASE WHEN n.kind IN ('BEAN','ROUTE','REPOSITORY','ENTITY','CONFIG_PROPERTY','EVENT_TYPE') THEN 1 ELSE 0 END),
+                    (SELECT COUNT(*) FROM edges e JOIN nodes t ON t.project_id=e.project_id AND t.generation=e.generation AND t.stable_id=e.target_stable_id
+                     WHERE e.project_id=?1 AND e.generation=?2 AND e.source_stable_id IN
+                       (SELECT stable_id FROM nodes s WHERE s.project_id=?1 AND s.generation=?2 AND s.package_name=n.package_name)
+                       AND t.package_name=n.package_name),
+                    SUM(CASE WHEN n.kind='ROUTE' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.kind='REPOSITORY' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.kind='ENTITY' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.kind='BEAN' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.kind='EVENT_TYPE' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.kind='CONFIG_PROPERTY' THEN 1 ELSE 0 END)
+             FROM nodes n WHERE n.project_id=?1 AND n.generation=?2 AND n.package_name IS NOT NULL AND n.file_path IS NOT NULL
+             GROUP BY n.package_name
+             ORDER BY 2 DESC, 3 DESC, 4 DESC, n.package_name
+             LIMIT ?3",
+        ).map_err(db_error)?;
+        statement
+            .query_map(
+                params![status.project.id.as_str(), generation, limit],
+                |row| {
+                    let routes: u64 = row.get(3)?;
+                    let repositories: u64 = row.get(4)?;
+                    let entities: u64 = row.get(5)?;
+                    let beans: u64 = row.get(6)?;
+                    let events: u64 = row.get(7)?;
+                    let config: u64 = row.get(8)?;
+                    let mut roles = Vec::new();
+                    if routes > 0 {
+                        roles.push("web".to_owned());
+                    }
+                    if beans > 0 {
+                        roles.push("service".to_owned());
+                    }
+                    if repositories > 0 || entities > 0 {
+                        roles.push("data".to_owned());
+                    }
+                    if events > 0 {
+                        roles.push("events".to_owned());
+                    }
+                    if config > 0 {
+                        roles.push("configuration".to_owned());
+                    }
+                    Ok(PackageMetric {
+                        package: row.get(0)?,
+                        framework_components: row.get(1)?,
+                        internal_edges: row.get(2)?,
+                        routes,
+                        repositories,
+                        entities,
+                        roles,
+                    })
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)
+    }
+
+    /// Returns compact deterministic Spring role counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn framework_counts(
+        &self,
+        status: &IndexStatus,
+    ) -> Result<BTreeMap<String, u64>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut counts = BTreeMap::new();
+        for (name, sql) in [
+            (
+                "controllers",
+                "SELECT COUNT(DISTINCT source_stable_id) FROM edges WHERE project_id=?1 AND generation=?2 AND kind='EXPOSES_ROUTE'",
+            ),
+            (
+                "services",
+                "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND kind='BEAN' AND lower(json_extract(metadata_json,'$.stereotype')) LIKE '%service%'",
+            ),
+            (
+                "repositories",
+                "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND kind='REPOSITORY'",
+            ),
+            (
+                "entities",
+                "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND kind='ENTITY'",
+            ),
+            (
+                "routes",
+                "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND kind='ROUTE'",
+            ),
+            (
+                "beans",
+                "SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND kind='BEAN'",
+            ),
+        ] {
+            let value = self
+                .connection
+                .query_row(
+                    sql,
+                    params![status.project.id.as_str(), generation],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            counts.insert(name.to_owned(), value);
+        }
+        Ok(counts)
+    }
+
+    /// Returns diagnostic counts grouped by analyzer category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn diagnostic_counts(
+        &self,
+        status: &IndexStatus,
+    ) -> Result<BTreeMap<String, u64>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        grouped_counts(
+            &self.connection,
+            "SELECT kind, COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2 GROUP BY kind ORDER BY kind",
+            status.project.id.as_str(),
+            generation,
+        ).map(|values| values.into_iter().collect())
+    }
+
+    /// Returns indexed source-set names reported by the analyzer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn source_sets(&self, status: &IndexStatus) -> Result<Vec<String>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT json_extract(metadata_json,'$.source_set') AS source_set
+             FROM nodes WHERE project_id=?1 AND generation=?2 AND json_extract(metadata_json,'$.source_set') IS NOT NULL
+             ORDER BY source_set",
+        ).map_err(db_error)?;
+        statement
+            .query_map(params![status.project.id.as_str(), generation], |row| {
+                row.get(0)
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)
+    }
+
+    /// Returns every indexed source location, de-duplicated and generation-bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn evidence_locations(
+        &self,
+        status: &IndexStatus,
+    ) -> Result<Vec<EvidenceLocation>, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        let mut statement = self.connection.prepare(
+            "SELECT file_path,start_line,end_line FROM (
+                 SELECT file_path,start_line,end_line FROM nodes WHERE project_id=?1 AND generation=?2 AND file_path IS NOT NULL
+                 UNION SELECT file_path,start_line,end_line FROM edge_occurrences WHERE project_id=?1 AND generation=?2
+             ) ORDER BY file_path,start_line,end_line",
+        ).map_err(db_error)?;
+        statement
+            .query_map(params![status.project.id.as_str(), generation], |row| {
+                Ok(EvidenceLocation {
+                    file_path: row.get(0)?,
+                    start_line: row.get(1)?,
+                    end_line: row.get(2)?,
+                })
+            })
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)

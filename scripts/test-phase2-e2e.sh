@@ -24,13 +24,13 @@ def call(request):
     return json.loads(completed.stdout.strip().splitlines()[-1])["result"]["structuredContent"]
 
 context = call({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_symbol_context","arguments":{"project":"java-core","stable_id":"method:dev.graphine.fixture.core.CoreScenario#run()","detail":"detailed","token_budget":4000}}})
-targets = {fact.get("target") for fact in context["facts"] if fact.get("kind") == "CALLS"}
+targets = {fact.get("stable_id") for fact in context["result"]["callees"] if fact.get("relationship") == "CALLS"}
 expected = "method:dev.graphine.fixture.core.Operations#combine(java.lang.String,java.lang.String)"
 wrong = "method:dev.graphine.fixture.core.Operations#combine(int,int)"
 assert expected in targets and wrong not in targets
 
 occurrences = call({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_symbol_context","arguments":{"project":"java-core","stable_id":"method:dev.graphine.fixture.core.Operations#repeatTrim(java.lang.String)","detail":"detailed","token_budget":4000}}})
-trim = [fact for fact in occurrences["facts"] if fact.get("kind") == "CALLS" and fact.get("target") == "method:java.lang.String#trim()"]
+trim = [fact for fact in occurrences["result"]["callees"] if fact.get("relationship") == "CALLS" and fact.get("stable_id") == "method:java.lang.String#trim()"]
 assert len(trim) == 1 and trim[0]["occurrence_count"] == 3 and len(trim[0]["evidence_refs"]) == 3
 PY
 printf '%s\n' 'Phase 2 E2E passed: fixture -> JDT -> JSONL -> Rust -> SQLite -> MCP'

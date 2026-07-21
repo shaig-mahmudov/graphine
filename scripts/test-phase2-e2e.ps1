@@ -25,13 +25,13 @@ try {
     $response = Invoke-GraphineMcp $request
     $expected = "method:dev.graphine.fixture.core.Operations#combine(java.lang.String,java.lang.String)"
     $wrong = "method:dev.graphine.fixture.core.Operations#combine(int,int)"
-    $targets = @($response.result.structuredContent.facts | Where-Object kind -eq "CALLS" | ForEach-Object target)
+    $targets = @($response.result.structuredContent.result.callees | Where-Object relationship -eq "CALLS" | ForEach-Object stable_id)
     if ($targets -notcontains $expected) { throw "expected overloaded call target was absent" }
     if ($targets -contains $wrong) { throw "incorrect overloaded call target was present" }
 
     $occurrenceRequest = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_symbol_context","arguments":{"project":"java-core","stable_id":"method:dev.graphine.fixture.core.Operations#repeatTrim(java.lang.String)","detail":"detailed","token_budget":4000}}}'
     $occurrenceResponse = Invoke-GraphineMcp $occurrenceRequest
-    $trim = @($occurrenceResponse.result.structuredContent.facts | Where-Object { $_.kind -eq "CALLS" -and $_.target -eq "method:java.lang.String#trim()" })
+    $trim = @($occurrenceResponse.result.structuredContent.result.callees | Where-Object { $_.relationship -eq "CALLS" -and $_.stable_id -eq "method:java.lang.String#trim()" })
     if ($trim.Count -ne 1) { throw "graph traversal did not retain exactly one logical trim edge" }
     if ($trim[0].occurrence_count -ne 3) { throw "repeated trim call occurrences were not preserved" }
     if (@($trim[0].evidence_refs).Count -ne 3) { throw "trim occurrence evidence was not queryable" }

@@ -42,8 +42,8 @@ try {
     $files = @(Get-ChildItem -LiteralPath $corpus -Recurse -Filter *.java -File)
     $sourceLines = ($files | ForEach-Object { (Get-Content -LiteralPath $_.FullName).Count } | Measure-Object -Sum).Sum
     $routeIndex = [Math]::Min($Controllers - 1, [Math]::Floor($Controllers / 2))
-    $route = "route:GET:/api/c$($routeIndex.ToString('000'))/{id}"
-    $request = @{jsonrpc="2.0";id=1;method="tools/call";params=@{name="get_graph_neighborhood";arguments=@{project="spring-medium";start_stable_id=$route;direction="outbound";max_depth=2;max_nodes=25;token_budget=1200}}} | ConvertTo-Json -Compress -Depth 8
+    $path = "/api/c$($routeIndex.ToString('000'))/{id}"
+    $request = @{jsonrpc="2.0";id=1;method="tools/call";params=@{name="get_endpoint_context";arguments=@{project="spring-medium";method="GET";path=$path;max_depth=4;token_budget=1200}}} | ConvertTo-Json -Compress -Depth 8
     $latencies = @(1..20 | ForEach-Object { Invoke-McpQuery $request })
     $database = Join-Path $data "graphine.sqlite3"
     $report = [ordered]@{
@@ -55,7 +55,7 @@ try {
         timing_ms = [ordered]@{ end_to_end_analysis = $watch.ElapsedMilliseconds; java_analysis = $analysis.summary.parsing_ms; spring_semantic_pass = $analysis.summary.spring_semantic_ms; protocol_serialization = $analysis.summary.serialization_ms; rust_ingestion = $analysis.ingestion_ms; endpoint_context_preparation_p50 = (Percentile $latencies 0.50); endpoint_context_preparation_p95 = (Percentile $latencies 0.95) }
         memory_bytes = [ordered]@{ peak_java_heap_observed = $analysis.summary.peak_java_memory_bytes }
         capabilities = $analysis.summary.capabilities
-        assumptions = @("Generated Spring-shaped corpus uses canonical source annotation stubs and no external dependencies", "Endpoint-context preparation is approximated by a bounded two-hop route neighborhood because the Phase 4 endpoint tool is intentionally absent", "Query latency includes fresh STDIO process startup", "Results describe this environment only")
+        assumptions = @("Generated Spring-shaped corpus uses canonical source annotation stubs and no external dependencies", "Endpoint-context timing uses the Phase 4 get_endpoint_context tool", "Query latency includes fresh STDIO process startup", "Results describe this environment only")
     }
     $destination = [IO.Path]::GetFullPath((Join-Path $repo $Output))
     New-Item -ItemType Directory -Force ([IO.Path]::GetDirectoryName($destination)) | Out-Null

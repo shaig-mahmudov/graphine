@@ -1,46 +1,56 @@
 # Graphine
 
-Graphine is intended to become a local-first code-intelligence engine and MCP server for Java and Spring Boot repositories. Its goal is to give AI coding agents compact structural facts, evidence locations, confidence, and unresolved ambiguity so they can answer repository questions with fewer file reads and fewer tokens.
+Graphine is a local-first code-intelligence foundation and MCP server for Java and Spring Boot repositories. It gives AI coding agents compact structural facts, evidence locations, confidence, and unresolved ambiguity without uploading source code.
 
-## Current status: Phase 0
+## Current status: Phase 1
 
-This repository currently contains only the evaluation foundation:
+The repository contains the Phase 0 evaluation foundation and the Phase 1 local graph service:
 
-- a product contract, accuracy model, architecture boundary, non-goals, and reproducible benchmark methodology;
-- versioned JSON Schemas for questions, manually verified ground truth, and run reports;
-- 44 deterministic questions across pure Java, Spring Web, bean resolution, and Spring Data fixtures;
-- small Java 17 fixture projects with intentional edge cases; and
-- a Rust CLI that validates the corpus, rejects inconsistent data, computes statistics, and writes deterministic reports.
+- product, accuracy, architecture, non-goal, and reproducible benchmark contracts;
+- versioned schemas, 44 questions, matching ground truth, and four Java 17 fixtures;
+- a benchmark validator, statistics CLI, and deterministic run reports;
+- a `graphine` CLI for registration, migrations, inspection, synthetic indexing, health checks, and MCP serving;
+- SQLite project, generation, node, edge, and evidence storage with atomic activation;
+- deterministic lexical queries, bounded traversal, pagination, detail levels, and token-budget compaction; and
+- a five-tool MCP server over STDIO with safe JSON-RPC errors and structured tracing to stderr.
 
-Graphine does **not** yet contain an MCP server, Java compiler integration, Spring analyzer, embeddings, graph database, runtime probe, or LLM adapter. The benchmark targets are engineering goals, not measured achievements.
+Graphine still does **not** parse Java or infer Spring semantics. Phase 1 graph facts come only from explicit synthetic JSON. There is no Eclipse JDT integration, embedding model, graph database, runtime probe, remote service, or LLM adapter. Benchmark targets remain engineering goals, not achieved product claims.
 
-## Use the corpus tools
+## Build and run
 
 Stable Rust 1.85 or newer is required.
+
+```bash
+cargo build --workspace
+cargo run -p graphine-cli -- --data-dir .graphine db migrate
+cargo run -p graphine-cli -- --data-dir .graphine register fixtures/spring-web --name spring-web
+cargo run -p graphine-cli -- --data-dir .graphine synthetic-index spring-web fixtures/spring-web/graphine.synthetic.json
+cargo run -p graphine-cli -- --data-dir .graphine status spring-web
+cargo run -p graphine-cli -- --data-dir .graphine serve
+```
+
+MCP transport is newline-delimited JSON-RPC over STDIO. Logs go to stderr; protocol responses go to stdout. See [CLI usage](docs/CLI.md), [MCP tools](docs/MCP_TOOLS.md), and [synthetic graph format](docs/SYNTHETIC_GRAPH.md).
+
+## Corpus tools and checks
 
 ```bash
 cargo run -p benchmark-core -- validate
 cargo run -p benchmark-core -- stats
 cargo run -p benchmark-core -- report --output benchmarks/reports/corpus.json
-```
-
-Quality checks:
-
-```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The Spring fixture Maven builds require their declared dependencies to be available. Corpus validation itself performs no network calls and never builds fixtures.
+The Spring fixture Maven builds require their declared dependencies. Corpus validation, graph queries, and MCP serving perform no network calls and never execute repository build scripts.
 
 ## Add benchmark material
 
-1. Add or extend a self-contained project under `fixtures/<fixture>` and document its intended behavior in that fixture's README.
-2. Add a YAML document under `benchmarks/questions`. Choose a globally unique ID, declared fixture, category, capabilities, and honest token budget.
-3. Add a matching YAML document under `benchmarks/ground-truth`. Evidence paths must be relative to the fixture root; line numbers must exist and must tightly support the expected claim.
-4. Use `ambiguous`, `unresolved`, or `unsupported` when deterministic ground truth is unavailable. Add allowed ambiguities and forbidden claims.
+1. Add or extend a self-contained project under `fixtures/<fixture>` and document it.
+2. Add a unique YAML question under `benchmarks/questions`.
+3. Add matching ground truth under `benchmarks/ground-truth` with tight fixture-relative evidence.
+4. Represent unavailable certainty as `ambiguous`, `unresolved`, or `unsupported`.
 5. Run validation, tests, and regenerate `benchmarks/reports/corpus.json`.
 
-Schemas are designed so the corpus can grow beyond 100 questions without changing the format. See [Benchmark methodology](docs/BENCHMARK_METHODOLOGY.md) for evaluation rules and [Product contract](docs/PRODUCT_CONTRACT.md) for the intended stable product.
+Schemas can grow beyond 100 questions without format changes. See the [benchmark methodology](docs/BENCHMARK_METHODOLOGY.md) and [product contract](docs/PRODUCT_CONTRACT.md).
 

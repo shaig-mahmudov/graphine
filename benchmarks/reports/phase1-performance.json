@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "measurement_date": "2026-07-21",
+  "profile": "debug",
+  "platform": "windows-x86_64",
+  "rust_version": "1.96.0",
+  "synthetic_graph": {
+    "nodes": 10000,
+    "edges": 30000
+  },
+  "measurements_ms": {
+    "load": 2383,
+    "warm_exact_symbol_lookup": 32,
+    "direct_context": 13
+  },
+  "response": {
+    "requested_tokens": 800,
+    "estimated_tokens": 335,
+    "valid_under_budget": true
+  },
+  "engineering_targets": {
+    "warm_exact_symbol_lookup_below_ms": 50,
+    "direct_context_below_ms": 100
+  },
+  "notes": [
+    "Single local debug-profile run; not a product-wide performance claim.",
+    "estimated_tokens uses the documented character-count approximation, not a tokenizer."
+  ]
+}

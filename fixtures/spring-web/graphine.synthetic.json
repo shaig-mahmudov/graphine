@@ -1,0 +1,92 @@
+{
+  "project": "spring-web",
+  "nodes": [
+    {
+      "stable_id": "type:dev.graphine.fixture.web.EventController",
+      "kind": "TYPE",
+      "qualified_name": "dev.graphine.fixture.web.EventController",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/EventController.java",
+      "start_line": 15,
+      "end_line": 37,
+      "confidence": "COMPILER_RESOLVED",
+      "provenance": "phase-1-fixture",
+      "metadata": {"annotations": ["RestController", "RequestMapping"]}
+    },
+    {
+      "stable_id": "method:dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)",
+      "kind": "METHOD",
+      "qualified_name": "dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)",
+      "simple_name": "create",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/EventController.java",
+      "start_line": 28,
+      "end_line": 32,
+      "confidence": "COMPILER_RESOLVED",
+      "provenance": "phase-1-fixture"
+    },
+    {
+      "stable_id": "route:POST:/api/v1/events",
+      "kind": "ROUTE",
+      "qualified_name": "POST /api/v1/events",
+      "simple_name": "create event",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/EventController.java",
+      "start_line": 15,
+      "end_line": 32,
+      "confidence": "FRAMEWORK_RESOLVED",
+      "provenance": "phase-1-fixture",
+      "metadata": {"http_method": "POST", "path": "/api/v1/events"}
+    },
+    {
+      "stable_id": "method:dev.graphine.fixture.web.EventService#create(dev.graphine.fixture.web.CreateEventRequest)",
+      "kind": "METHOD",
+      "qualified_name": "dev.graphine.fixture.web.EventService#create(dev.graphine.fixture.web.CreateEventRequest)",
+      "simple_name": "create",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/EventService.java",
+      "start_line": 22,
+      "end_line": 26,
+      "confidence": "COMPILER_RESOLVED",
+      "provenance": "phase-1-fixture"
+    },
+    {
+      "stable_id": "method:dev.graphine.fixture.web.EventRepository#save(dev.graphine.fixture.web.Event)",
+      "kind": "METHOD",
+      "qualified_name": "dev.graphine.fixture.web.EventRepository#save(dev.graphine.fixture.web.Event)",
+      "simple_name": "save",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/EventRepository.java",
+      "start_line": 6,
+      "end_line": 10,
+      "confidence": "COMPILER_RESOLVED",
+      "provenance": "phase-1-fixture"
+    },
+    {
+      "stable_id": "entity:dev.graphine.fixture.web.Event",
+      "kind": "ENTITY",
+      "qualified_name": "dev.graphine.fixture.web.Event",
+      "simple_name": "Event",
+      "module_name": "spring-web",
+      "package_name": "dev.graphine.fixture.web",
+      "file_path": "src/main/java/dev/graphine/fixture/web/Event.java",
+      "start_line": 3,
+      "end_line": 3,
+      "confidence": "STATIC_INFERRED",
+      "provenance": "phase-1-fixture",
+      "unresolved": ["Phase 1 does not analyze Java entity semantics"]
+    }
+  ],
+  "edges": [
+    {"source_stable_id":"route:POST:/api/v1/events","target_stable_id":"method:dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)","kind":"HANDLED_BY","confidence":"FRAMEWORK_RESOLVED","provenance":"phase-1-fixture"},
+    {"source_stable_id":"method:dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)","target_stable_id":"method:dev.graphine.fixture.web.EventService#create(dev.graphine.fixture.web.CreateEventRequest)","kind":"CALLS","confidence":"COMPILER_RESOLVED","provenance":"phase-1-fixture"},
+    {"source_stable_id":"method:dev.graphine.fixture.web.EventService#create(dev.graphine.fixture.web.CreateEventRequest)","target_stable_id":"method:dev.graphine.fixture.web.EventRepository#save(dev.graphine.fixture.web.Event)","kind":"CALLS","confidence":"COMPILER_RESOLVED","provenance":"phase-1-fixture"},
+    {"source_stable_id":"method:dev.graphine.fixture.web.EventRepository#save(dev.graphine.fixture.web.Event)","target_stable_id":"entity:dev.graphine.fixture.web.Event","kind":"WRITES","confidence":"STATIC_INFERRED","provenance":"phase-1-fixture"},
+    {"source_stable_id":"type:dev.graphine.fixture.web.EventController","target_stable_id":"method:dev.graphine.fixture.web.EventController#create(dev.graphine.fixture.web.CreateEventRequest)","kind":"DECLARES","confidence":"COMPILER_RESOLVED","provenance":"phase-1-fixture"}
+  ]
+}

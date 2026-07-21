@@ -1,0 +1,21 @@
+﻿{
+    "schema_version":  "1.0.0",
+    "measured_at_utc":  "2026-07-21T20:44:32.7451726Z",
+    "fixture":  "spring-web",
+    "cache_state":  "warm-within-single-server-process",
+    "endpoint_context":  {
+                             "iterations":  100,
+                             "warm_p95_ms":  8,
+                             "median_estimated_response_tokens":  740,
+                             "maximum_ms":  9
+                         },
+    "evidence":  {
+                     "iterations":  100,
+                     "warm_p95_ms":  2,
+                     "median_estimated_response_tokens":  288,
+                     "maximum_ms":  2
+                 },
+    "notes":  [
+                  "Estimated response tokens use Graphine\u0027s deterministic character estimator, not provider input-token measurements."
+              ]
+}

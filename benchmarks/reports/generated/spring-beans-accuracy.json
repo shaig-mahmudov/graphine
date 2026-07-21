@@ -1,0 +1,67 @@
+{
+  "fixture": "spring-beans",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 13,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "spring-beans-001",
+      "category": "bean-resolution",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-beans-002",
+      "category": "bean-resolution",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-beans-003",
+      "category": "bean-discovery",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-beans-004",
+      "category": "bean-discovery",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-beans-006",
+      "category": "component-discovery",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-beans-007",
+      "category": "ambiguous-injection",
+      "status": "passed",
+      "matched": 3,
+      "expected": 3
+    },
+    {
+      "question_id": "spring-beans-009",
+      "category": "meta-stereotype",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-beans-010",
+      "category": "configuration",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "fixture": "spring-data",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 11,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "spring-data-001",
+      "category": "entity-relationships",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-data-002",
+      "category": "repository-domain",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-data-003",
+      "category": "derived-query",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-data-004",
+      "category": "derived-query",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-data-006",
+      "category": "entity-access",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-data-006",
+      "category": "repository-use",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-data-009",
+      "category": "modifying-query",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "mode": "baseline",
+  "allowed_tools": [
+    "list_files",
+    "text_search",
+    "read_file"
+  ],
+  "forbidden_tools": [
+    "graphine_mcp",
+    "build",
+    "shell_execution",
+    "network"
+  ],
+  "capture": [
+    "input_tokens",
+    "output_tokens",
+    "tool_calls",
+    "file_searches",
+    "file_reads",
+    "files_opened",
+    "evidence_lines_read",
+    "wall_time_ms"
+  ]
+}

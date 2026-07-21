@@ -1,0 +1,60 @@
+{
+  "fixture": "spring-web",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 10,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "spring-web-001",
+      "category": "route-composition",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-web-002",
+      "category": "route-composition",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-web-003",
+      "category": "route-composition",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-web-004",
+      "category": "route-composition",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "spring-web-006",
+      "category": "events",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-web-013",
+      "category": "route-aliases",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "spring-web-014",
+      "category": "route-conflicts",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0.0",
+  "status": "not_run",
+  "reason": "No paired same-model provider session captures or provider-reported token counts are available in the local repository.",
+  "paired_questions": 0,
+  "metrics": {
+    "baseline_correctness": null,
+    "graphine_correctness": null,
+    "unsupported_graphine_claims": null,
+    "median_input_token_reduction_percent": null,
+    "median_file_read_reduction_percent": null,
+    "median_tool_call_reduction_percent": null
+  },
+  "claim": "No agent-efficiency target is claimed from an unexecuted comparison."
+}

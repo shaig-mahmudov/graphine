@@ -1,6 +1,6 @@
 {
     "report_version":  1,
-    "generated_at":  "2026-07-21T18:32:02.7098827Z",
+    "generated_at":  "2026-07-21T20:35:40.0528141Z",
     "environment":  {
                         "os":  "Microsoft Windows NT 10.0.26200.0",
                         "architecture":  "X64",
@@ -17,18 +17,18 @@
                   "node_count":  1252,
                   "edge_count":  2751,
                   "occurrence_count":  1750,
-                  "database_bytes":  4644864
+                  "database_bytes":  4653056
               },
     "timing_ms":  {
-                      "end_to_end_analysis":  2639,
-                      "analyzer":  1256,
-                      "ingestion":  818,
-                      "query_p50":  16,
+                      "end_to_end_analysis":  2825,
+                      "analyzer":  1508,
+                      "ingestion":  766,
+                      "query_p50":  17,
                       "query_p95":  18
                   },
     "memory_bytes":  {
-                         "peak_java_heap_observed":  41635600,
-                         "peak_rust_working_set":  16678912
+                         "peak_java_heap_observed":  38339744,
+                         "peak_rust_working_set":  16691200
                      },
     "assumptions":  [
                         "Generated corpus has no external dependencies",

@@ -77,8 +77,11 @@
     "input_tokens": null,
     "output_tokens": null,
     "tool_calls": null,
+    "graphine_calls": null,
+    "file_searches": null,
     "file_reads": null,
     "files_opened": null,
+    "evidence_lines_read": null,
     "wall_time_ms": null,
     "query_latency_ms": null
   }

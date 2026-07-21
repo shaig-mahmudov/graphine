@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphine.local/schema/agent-session.schema.json",
+  "title": "Graphine paired agent session capture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mode", "controls", "runs"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "mode": { "enum": ["baseline", "graphine"] },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "system_prompt_hash", "repository_commit", "repository_dirty_digest", "time_limit_ms", "maximum_tool_calls", "deterministic_settings"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "system_prompt_hash": { "type": "string", "minLength": 1 },
+        "repository_commit": { "type": "string", "minLength": 1 },
+        "repository_dirty_digest": { "type": "string" },
+        "time_limit_ms": { "type": "integer", "minimum": 1 },
+        "maximum_tool_calls": { "type": "integer", "minimum": 1 },
+        "deterministic_settings": { "type": "object" }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question_id", "answer", "claims", "evidence", "uncertainty_reported", "metrics"],
+        "properties": {
+          "question_id": { "type": "string" },
+          "answer": { "type": "string" },
+          "claims": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "evidence": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["file", "start_line", "end_line"], "properties": { "file": { "type": "string" }, "start_line": { "type": "integer", "minimum": 1 }, "end_line": { "type": "integer", "minimum": 1 } } } },
+          "uncertainty_reported": { "type": "boolean" },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["correctness", "precision", "recall", "unsupported_claims", "unresolved_count", "input_tokens", "output_tokens", "tool_calls", "graphine_calls", "file_searches", "file_reads", "files_opened", "evidence_lines_read", "wall_time_ms", "query_latency_ms"],
+            "properties": {
+              "correctness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "precision": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "recall": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "unsupported_claims": { "type": ["integer", "null"], "minimum": 0 },
+              "unresolved_count": { "type": ["integer", "null"], "minimum": 0 },
+              "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+              "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+              "tool_calls": { "type": ["integer", "null"], "minimum": 0 },
+              "graphine_calls": { "type": ["integer", "null"], "minimum": 0 },
+              "file_searches": { "type": ["integer", "null"], "minimum": 0 },
+              "file_reads": { "type": ["integer", "null"], "minimum": 0 },
+              "files_opened": { "type": ["integer", "null"], "minimum": 0 },
+              "evidence_lines_read": { "type": ["integer", "null"], "minimum": 0 },
+              "wall_time_ms": { "type": ["integer", "null"], "minimum": 0 },
+              "query_latency_ms": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          },
+          "human_review": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "llm_judge": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

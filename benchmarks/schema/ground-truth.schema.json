@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphine.local/schema/ground-truth.schema.json",
+  "title": "Graphine benchmark ground truth",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["question_id", "status", "expected", "confidence_required", "evidence", "allowed_ambiguities", "forbidden_claims"],
+  "properties": {
+    "question_id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "status": { "enum": ["answerable", "ambiguous", "unresolved", "unsupported"] },
+    "expected": { "type": "object" },
+    "confidence_required": {
+      "enum": ["RUNTIME_CONFIRMED", "BYTECODE_CONFIRMED", "COMPILER_RESOLVED", "FRAMEWORK_RESOLVED", "STATIC_INFERRED", "AMBIGUOUS", "UNRESOLVED"]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "start_line", "end_line"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1, "not": { "pattern": "^(?:[A-Za-z]:|[/\\\\])" } },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "end_line": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "allowed_ambiguities": { "type": "array", "items": { "type": "string" } },
+    "forbidden_claims": { "type": "array", "items": { "type": "string" } }
+  }
+}
+

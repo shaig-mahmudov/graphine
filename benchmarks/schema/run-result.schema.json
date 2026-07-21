@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphine.local/schema/run-result.schema.json",
+  "title": "Graphine benchmark run result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_kind", "corpus", "metrics"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "report_kind": { "enum": ["corpus", "baseline", "experiment"] },
+    "corpus": { "type": "object" },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correctness", "precision", "recall", "unsupported_claims", "unresolved_count", "input_tokens", "output_tokens", "tool_calls", "file_reads", "files_opened", "wall_time_ms", "query_latency_ms"],
+      "properties": {
+        "correctness": { "$ref": "#/$defs/ratioOrNull" },
+        "precision": { "$ref": "#/$defs/ratioOrNull" },
+        "recall": { "$ref": "#/$defs/ratioOrNull" },
+        "unsupported_claims": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "unresolved_count": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "input_tokens": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "output_tokens": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "tool_calls": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "file_reads": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "files_opened": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "wall_time_ms": { "$ref": "#/$defs/nonNegativeOrNull" },
+        "query_latency_ms": { "$ref": "#/$defs/nonNegativeOrNull" }
+      }
+    }
+  },
+  "$defs": {
+    "ratioOrNull": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "nonNegativeOrNull": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

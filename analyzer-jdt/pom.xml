@@ -7,6 +7,7 @@
   <modules>
     <module>analyzer-protocol</module>
     <module>project-resolver</module>
+    <module>spring-static-analyzer</module>
     <module>java-symbol-analyzer</module>
     <module>analyzer-cli</module>
   </modules>

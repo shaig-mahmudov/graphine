@@ -124,6 +124,52 @@ final class JavaProjectAnalyzerTest {
                 && line.contains("#choose(")));
     }
 
+    @Test
+    void spring_pass_composes_routes_and_resolves_unique_constructor_candidates() throws Exception {
+        Path sourceRoot = Files.createDirectories(root.resolve("spring/src/main/java"));
+        write(sourceRoot, "org/springframework/stereotype/Service.java",
+                "package org.springframework.stereotype; public @interface Service { String value() default \"\"; }");
+        write(sourceRoot, "org/springframework/web/bind/annotation/RestController.java",
+                "package org.springframework.web.bind.annotation; public @interface RestController { String value() default \"\"; }");
+        write(sourceRoot, "org/springframework/web/bind/annotation/RequestMapping.java",
+                "package org.springframework.web.bind.annotation; public @interface RequestMapping { String[] value() default {}; }");
+        write(sourceRoot, "org/springframework/web/bind/annotation/GetMapping.java",
+                "package org.springframework.web.bind.annotation; public @interface GetMapping { String[] value() default {}; }");
+        write(sourceRoot, "sample/App.java", """
+                package sample;
+                import org.springframework.stereotype.Service;
+                import org.springframework.web.bind.annotation.*;
+                @Service class GreetingService { String get() { return "hi"; } }
+                @RestController @RequestMapping("/api")
+                class GreetingController {
+                    private final GreetingService service;
+                    GreetingController(GreetingService service) { this.service = service; }
+                    @GetMapping("/greeting") String get() { return service.get(); }
+                }
+                """);
+        Path project = root.resolve("spring");
+        ProjectModel model = new ProjectModel(project, List.of(project),
+                List.of(new SourceRoot(sourceRoot, "main", "spring", project)), List.of(), "17", "test", 0);
+        AnalysisRequest request = new AnalysisRequest(1, "spring", "analyze_project", project, AnalyzerMode.safe,
+                List.of("main"), new AnalyzerOptions(true, true, false, List.of()), Path.of("mvn"), 10_000);
+        StringWriter output = new StringWriter();
+
+        AnalysisResult result = new JavaProjectAnalyzer().analyze(model, request,
+                new ProtocolWriter(new ObjectMapper(), output));
+
+        assertEquals(Boolean.TRUE, result.summary().capabilities().get("spring_static_semantics"));
+        assertTrue(output.toString().contains("route:GET:/api/greeting"));
+        assertTrue(output.toString().contains("bean:greetingService"));
+        assertTrue(output.toString().contains("\"kind\":\"SELECTED_BEAN\""));
+        assertFalse(output.toString().contains("RUNTIME_CONFIRMED"));
+    }
+
+    private static void write(Path root, String relative, String contents) throws Exception {
+        Path file = root.resolve(relative);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, contents + "\n");
+    }
+
     private static boolean hasNode(List<JsonNode> events, String id) {
         return events.stream().anyMatch(event -> id.equals(event.path("stable_id").asText()));
     }

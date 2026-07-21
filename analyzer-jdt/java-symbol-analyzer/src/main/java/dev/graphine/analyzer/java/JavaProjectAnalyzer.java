@@ -6,6 +6,7 @@ import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.ProtocolWriter;
 import dev.graphine.analyzer.resolver.ProjectModel;
 import dev.graphine.analyzer.resolver.SourceRoot;
+import dev.graphine.analyzer.spring.SpringSemanticAnalyzer;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +31,7 @@ public final class JavaProjectAnalyzer {
             throws Exception {
         long started = System.nanoTime();
         GraphCollector collector = new GraphCollector();
+        SpringSemanticAnalyzer spring = new SpringSemanticAnalyzer(model.root());
         List<Path> files = discoverJavaFiles(model.sourceRoots());
         Map<Path, SourceRoot> ownership = ownership(model.sourceRoots(), files);
         String[] paths = files.stream().map(Path::toString).toArray(String[]::new);
@@ -79,11 +81,15 @@ public final class JavaProjectAnalyzer {
                 if (syntaxFailure) failed.incrementAndGet();
                 unit.accept(new SymbolVisitor(unit, file, model.root(), sourceRoot, collector, request.options(),
                         ambiguousLines));
+                spring.accept(unit, file, sourceRoot);
                 long used = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
                 peakMemory.accumulateAndGet(used, Math::max);
             }
         }, null);
         long parsingMs = Duration.ofNanos(System.nanoTime() - parsingStarted).toMillis();
+        long springStarted = System.nanoTime();
+        spring.emit(collector);
+        long springMs = Duration.ofNanos(System.nanoTime() - springStarted).toMillis();
         long serializationStarted = System.nanoTime();
         collector.emit(writer);
         long serializationMs = Duration.ofNanos(System.nanoTime() - serializationStarted).toMillis();
@@ -91,7 +97,8 @@ public final class JavaProjectAnalyzer {
         AnalysisSummary summary = new AnalysisSummary(files.size(), parsed.get(), failed.get(),
                 collector.bindingsResolved, collector.bindingsUnresolved, collector.nodeCount(), collector.edgeCount(),
                 Duration.ofNanos(System.nanoTime() - started).toMillis(), model.classpathResolutionMs(), parsingMs,
-                serializationMs, peakMemory.get(), status);
+                springMs, serializationMs, peakMemory.get(), Map.of("java_semantics", true,
+                        "spring_static_semantics", true, "spring_runtime_semantics", false), status);
         return new AnalysisResult(summary, status);
     }
 

@@ -3,6 +3,7 @@ package dev.graphine.analyzer.java;
 import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
+import dev.graphine.analyzer.protocol.GraphSink;
 import dev.graphine.analyzer.protocol.ProtocolWriter;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -15,19 +16,18 @@ import java.util.Set;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 
-final class GraphCollector {
+final class GraphCollector implements GraphSink {
     private final Map<String, GraphNode> nodes = new LinkedHashMap<>();
     private final Map<String, GraphEdge> edges = new LinkedHashMap<>();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
     long bindingsResolved;
     long bindingsUnresolved;
 
-    void node(GraphNode node) {
-        nodes.merge(node.stableId(), node, (existing, replacement) ->
-                existing.filePath() == null && replacement.filePath() != null ? replacement : existing);
+    @Override public void node(GraphNode node) {
+        nodes.merge(node.stableId(), node, GraphCollector::mergeNode);
     }
 
-    void edge(GraphEdge edge) {
+    @Override public void edge(GraphEdge edge) {
         String key = edge.source() + '\0' + edge.target() + '\0' + edge.kind();
         edges.merge(key, edge, (existing, occurrence) -> {
             List<dev.graphine.analyzer.protocol.EdgeOccurrence> merged = new ArrayList<>(existing.occurrences());
@@ -37,7 +37,7 @@ final class GraphCollector {
         });
     }
 
-    void diagnostic(Diagnostic diagnostic) {
+    @Override public void diagnostic(Diagnostic diagnostic) {
         diagnostics.add(diagnostic);
         bindingsUnresolved++;
     }
@@ -88,5 +88,21 @@ final class GraphCollector {
         if (binding.isRecord()) return "record";
         if (binding.isInterface()) return "interface";
         return "class";
+    }
+
+    private static GraphNode mergeNode(GraphNode existing, GraphNode replacement) {
+        Map<String, Object> metadata = new LinkedHashMap<>(existing.metadata());
+        metadata.putAll(replacement.metadata());
+        Set<String> unresolved = new LinkedHashSet<>(existing.unresolved());
+        unresolved.addAll(replacement.unresolved());
+        boolean framework = replacement.provenance().startsWith("spring-static");
+        return new GraphNode(existing.stableId(), framework ? replacement.kind() : existing.kind(),
+                existing.qualifiedName(), existing.simpleName(), existing.moduleName(), existing.packageName(),
+                existing.filePath() != null ? existing.filePath() : replacement.filePath(),
+                existing.startLine() != null ? existing.startLine() : replacement.startLine(),
+                existing.endLine() != null ? existing.endLine() : replacement.endLine(),
+                framework ? replacement.confidence() : existing.confidence(),
+                framework ? existing.provenance() + "+" + replacement.provenance() : existing.provenance(),
+                metadata, List.copyOf(unresolved));
     }
 }

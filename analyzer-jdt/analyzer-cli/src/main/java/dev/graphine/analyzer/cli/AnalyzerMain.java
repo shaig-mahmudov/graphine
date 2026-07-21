@@ -46,6 +46,8 @@ public final class AnalyzerMain {
                     "fingerprint", model.fingerprint(),
                     "java_release", model.javaRelease(),
                     "classpath_resolution_ms", model.classpathResolutionMs(),
+                    "capabilities", Map.of("java_semantics", true, "spring_static_semantics", true,
+                            "spring_runtime_semantics", false),
                     "modules", model.moduleRoots().stream().map(path -> path.getFileName().toString()).toList()));
             for (var entry : model.sourceRoots().stream().collect(java.util.stream.Collectors.groupingBy(SourceRoot::moduleName)).entrySet()) {
                 SourceRoot first = entry.getValue().get(0);
@@ -62,7 +64,8 @@ public final class AnalyzerMain {
                     original.filesFailed(), original.bindingsResolved(),
                     original.bindingsUnresolved() + resolverDiagnostics.size(), original.nodesEmitted(),
                     original.edgesEmitted(), original.durationMs(), original.classpathResolutionMs(),
-                    original.parsingMs(), original.serializationMs(), original.peakJavaMemoryBytes(), result.status());
+                    original.parsingMs(), original.springSemanticMs(), original.serializationMs(),
+                    original.peakJavaMemoryBytes(), original.capabilities(), result.status());
             writer.emit("analysis_summary", "summary", summary);
             writer.emit("analysis_completed", Map.of("status", result.status()));
         } catch (Exception error) {

@@ -16,3 +16,5 @@ Migration version 2 adds analyzer protocol/version, source fingerprint, partial 
 Migration version 3 adds normalized `edge_occurrences`. `edges` remains the one-row logical relationship used by traversal, while each occurrence stores a stable ordinal, repository-relative file, validated one-based inclusive line range, and bounded JSON metadata. Its composite foreign key ties evidence to exactly one project, generation, source, target, and kind. Compact queries expose `occurrence_count`; detailed/evidence queries page occurrence ranges without duplicating traversal edges.
 
 Activation is atomic: graph rows, diagnostics, analyzer metadata, invariant checks, `READY`, and `project_state.active_generation` commit together. A failure is recorded separately after rollback. The last ready generation is retained. Graphine does not yet garbage-collect old generations.
+
+Phase 3 requires no table migration: framework nodes, edges, evidence, conditions, and capability flags fit the normalized version 3 graph and generation summary. Older Phase 2 databases migrate unchanged, and older summaries deserialize with empty Phase 3 timing/capability defaults.

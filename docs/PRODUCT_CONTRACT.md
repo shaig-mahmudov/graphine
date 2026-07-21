@@ -26,11 +26,11 @@ Paths are repository-relative. Each material claim must be traceable to source, 
 
 ## Local-first privacy guarantee
 
-Indexing, parsing, storage, and query processing run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Phase 0 benchmark tools and the Phase 1 graph/MCP service perform no network calls.
+Indexing, parsing, storage, and query processing run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Safe analysis, benchmark tools, and graph/MCP queries perform no network calls; explicit trusted Maven resolution follows the operator's Maven repository configuration.
 
 ## Expected MCP behavior
 
-The stable MCP surface provides deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale indexes; returns repository-relative evidence; exposes confidence; and preserves ambiguity. Errors are explicit and machine-readable. Phase 1 implements this contract over synthetic graph data; real Java and Spring analysis remains future work.
+The stable MCP surface provides deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale or partial indexes; returns repository-relative evidence; exposes confidence and dispatch metadata; and preserves ambiguity. Errors are explicit and machine-readable. Phase 2 implements this contract over real compiler-resolved Java graphs. Spring analysis remains future work.
 
 ## Evidence, ambiguity, and accuracy
 

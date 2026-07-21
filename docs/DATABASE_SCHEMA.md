@@ -11,5 +11,6 @@ Graphine stores local state in `graphine.sqlite3`. Migration version 1 creates:
 
 Composite foreign keys prevent edges from crossing projects or generations. Unique constraints reject duplicate stable IDs and duplicate `(source, target, kind)` edges. JSON is checked by SQLite. Indexes cover project/generation, node stable ID, kind, qualified/simple names, edge source/target, and edge kind.
 
-Activation is atomic: graph rows, invariant checks, `READY`, and `project_state.active_generation` commit together. A failure is recorded separately after rollback. The last ready generation is retained. Phase 1 does not garbage-collect old generations.
+Migration version 2 adds analyzer protocol/version, source fingerprint, partial flag, and summary JSON to each generation, plus generation-scoped `analyzer_diagnostics`. Diagnostics contain a kind, optional repository-relative range and symbol text, a safe reason, and severity. The active generation's analyzer counts and summary are exposed by CLI and MCP status.
 
+Activation is atomic: graph rows, diagnostics, analyzer metadata, invariant checks, `READY`, and `project_state.active_generation` commit together. A failure is recorded separately after rollback. The last ready generation is retained. Graphine does not yet garbage-collect old generations.

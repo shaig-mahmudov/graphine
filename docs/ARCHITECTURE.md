@@ -1,4 +1,4 @@
-# Architecture through Phase 2
+# Architecture through Phase 4
 
 Phase 0 remains an independent evaluation pipeline:
 
@@ -20,10 +20,10 @@ graphine-cli -> graphine-analyzer-client -> Java worker -> Maven resolver + Ecli
 - `graphine-analyzer-client` owns bounded process startup, cancellation, timeout, JSONL streaming, protocol validation, and conversion into one atomic ingestion batch.
 - `analyzer-jdt` is a separate Maven reactor containing language-neutral protocol records, Maven resolution, JDT graph extraction, and the shaded worker CLI.
 - `graphine-index` is the deliberately small SQLite data-access and generation-lifecycle layer.
-- `graphine-query` owns lexical ranking, bounded traversal, pagination, detail shaping, and token-budget compaction.
-- `graphine-mcp` is a thin newline-delimited JSON-RPC/STDIO adapter. It exposes no file-reading tool.
+- `graphine-query` owns application-oriented ranking, grouped symbol/endpoint packs, bounded traversal, evidence IDs and secure snippet retrieval, pagination, and token-budget compaction.
+- `graphine-mcp` is a thin newline-delimited JSON-RPC/STDIO adapter. Its only source-reading capability is the bounded, repository-contained `get_evidence` contract.
 - `graphine-cli` owns configuration, local administration, explicit analyzer invocation, synthetic loading, and server startup.
-- `benchmark-core` remains independent of SQLite and MCP dependencies.
+- `benchmark-core` remains independent of SQLite and MCP dependencies while validating paired baseline/Graphine session captures with deterministic claims and evidence.
 
 SQLite work is synchronous and bounded. The Phase 1 server processes STDIO requests serially, so it needs no async wrapper or global mutable state. Queries use indexed SQL and bounded neighbor reads rather than loading the graph into memory. Future concurrent transports must put synchronous SQLite calls behind an explicit blocking boundary.
 

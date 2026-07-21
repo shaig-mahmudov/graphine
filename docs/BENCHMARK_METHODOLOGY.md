@@ -8,16 +8,18 @@ Runs must be isolated. Caches are cleared for cold-query comparisons and intenti
 
 ## Capture and scoring
 
-Each adapter records the raw answer and normalized atomic claims, the evidence opened, and these stable metrics:
+Each adapter records the raw answer, normalized atomic claims, uncertainty disclosure, evidence opened, optional blinded human/LLM secondary scores, and these stable metrics:
 
 - correctness, precision, recall, unsupported claims, and unresolved count;
 - input and output tokens reported by the model provider;
-- tool calls, file reads, and distinct files opened;
+- tool calls, Graphine calls, file searches, file reads, distinct files opened, and evidence lines read;
 - wall-clock time and per-query latency.
 
 Absent measurements are persisted as `null`; token counts are never estimated or invented. Correctness is defined by the question-specific ground truth and forbidden claims. Reviewers resolve scoring disputes without seeing whether an answer came from baseline or experiment. A stratified report includes fixture, category, difficulty, support level, and warm/cold state, along with medians and p95 where appropriate.
 
 Answer-quality degradation compares paired correctness scores. Token and tool-call reduction use paired medians so a small number of large repositories do not dominate. Unsupported deterministic resolution is counted even if the rest of an answer is correct. Unresolved answers are reported separately and are correct only where ground truth permits unresolved or ambiguous status.
+
+`benchmark-core compare-agents --baseline <session.json> --graphine <session.json> --output <report.json>` validates identical controls, pairs question runs, performs deterministic required/forbidden claim matching, validates repository-contained evidence ranges, requires uncertainty where ground truth is ambiguous/unresolved, and reports paired medians. The same capture schema is used for both modes. Baseline mode exposes listing/search/read only; Graphine mode exposes the seven MCP tools plus bounded evidence/file reading. Missing provider token measurements remain `null`; the evaluator never invents them.
 
 ## Engineering goals
 
@@ -29,12 +31,12 @@ These are initial goals, **not achieved claims**:
 | Structural query recall | at least 90% |
 | Spring route precision | at least 98% |
 | Unsupported deterministic resolutions | 0 |
-| Median input-token reduction | at least 70% |
-| Median tool-call reduction | at least 50% |
+| Median input-token reduction | at least 60% |
+| Median file-read reduction | at least 70% |
+| Median tool-call reduction | at least 40% |
 | Answer-quality degradation | no more than 2% |
 | Warm-query p95 | below 100 ms |
 
 ## Reproduction checklist
 
 Record repository commit and dirty-state digest, fixture toolchains, model/provider identifiers, agent prompt and tool definitions, model settings, adapter version, limits, cache state, OS/architecture, and run timestamps. Validate the corpus before every run. Preserve the generated run JSON and raw adapter artifacts. A comparison is publishable only when both conditions completed under the same recorded controls.
-

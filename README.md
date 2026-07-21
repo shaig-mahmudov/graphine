@@ -2,22 +2,22 @@
 
 Graphine is a local-first code-intelligence foundation and MCP server for Java and Spring Boot repositories. It gives AI coding agents compact structural facts, evidence locations, confidence, and unresolved ambiguity without uploading source code.
 
-## Current status: Phase 3 Spring static semantics
+## Current status: Phase 4 agent-optimized MCP queries
 
-The repository contains the Phase 0 evaluation foundation, Phase 1 local graph service, Phase 2 Java analyzer, Phase 2.5 hardening, and Phase 3 Spring semantic pass:
+The repository contains the Phase 0 evaluation foundation through the Phase 4 agent query and evaluation layer:
 
 - product, accuracy, architecture, non-goal, and reproducible benchmark contracts;
 - versioned schemas, 44 questions, matching ground truth, and four Java 17 fixtures;
-- a benchmark validator, statistics CLI, and deterministic run reports;
+- a benchmark validator, statistics CLI, deterministic graph reports, and paired baseline-versus-Graphine agent capture/evaluation;
 - a `graphine` CLI for registration, explicit safe/trusted Java analysis, diagnostics, synthetic indexing, health checks, and MCP serving;
 - SQLite project, generation, logical-edge, normalized occurrence-evidence, and diagnostic storage with atomic activation;
-- deterministic lexical queries, bounded traversal, generation-bound opaque pagination, detail levels, and uncertainty-preserving token-budget compaction;
-- a five-tool MCP server over STDIO with validated initialization lifecycle, negotiated stable protocol revisions, safe JSON-RPC errors, structured content, and tracing to stderr;
+- deterministic application-oriented ranking, grouped symbol packs, endpoint flow, bounded path traversal, generation-bound evidence, stable pagination, and uncertainty-preserving structural compaction;
+- a seven-tool MCP server over STDIO with project orientation, ranked symbol search, grouped symbol/endpoint context, secure evidence snippets, status, and tracing to stderr;
 - an independently runnable Java 17 worker using Eclipse JDT batch parsing and compiler bindings;
 - a dedicated bounded Spring pass for stereotypes, beans/injection, routes, repositories/entities, configuration keys, and static events; and
 - bounded safe Maven parent/property/reactor/cache resolution, content-based fingerprints, executable-relative analyzer packaging, derived doctor capabilities, automated graph accuracy evaluation, cross-platform CI/E2E, and a deterministic medium corpus.
 
-Graphine does **not** start Spring or make runtime-confirmed, effective-security, or transaction-proxy claims. There is no Gradle support, embedding model, graph database, runtime probe, remote service, or LLM adapter. See the checked-in Phase 2/2.5/3 accuracy and performance reports and [Spring static-semantics boundary](docs/SPRING_STATIC_SEMANTICS.md).
+Graphine does **not** start Spring or make runtime-confirmed, effective-security, or transaction-proxy claims. There is no Gradle support, embedding model, graph database, runtime probe, remote service, or built-in model provider. See the checked-in accuracy/performance reports, [MCP tools](docs/MCP_TOOLS.md), and [Spring static-semantics boundary](docs/SPRING_STATIC_SEMANTICS.md).
 
 ## Build and run
 
@@ -43,6 +43,7 @@ MCP transport is newline-delimited JSON-RPC over STDIO. Logs go to stderr; proto
 cargo run -p benchmark-core -- validate
 cargo run -p benchmark-core -- stats
 cargo run -p benchmark-core -- report --output benchmarks/reports/corpus.json
+cargo run -p benchmark-core -- compare-agents --baseline baseline.json --graphine graphine.json --output benchmarks/reports/phase4-agent-comparison.json
 powershell -File scripts/evaluate-java-accuracy.ps1
 powershell -File scripts/evaluate-spring-accuracy.ps1
 powershell -File scripts/test-phase2-e2e.ps1

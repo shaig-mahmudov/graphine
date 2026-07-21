@@ -1,6 +1,6 @@
 # Non-goals
 
-Phase 0 does not implement production code intelligence. It specifically excludes the MCP server, Java compiler analyzer, Spring analyzer, embeddings, graph database, and runtime probe.
+Phase 1 implements the local SQLite graph, query, CLI, and MCP foundation, but not production source analysis. It specifically excludes a Java compiler analyzer, Spring analyzer, embeddings, graph database, and runtime probe.
 
 The initial product is not intended to:
 

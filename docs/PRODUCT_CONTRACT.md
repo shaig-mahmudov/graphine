@@ -26,11 +26,11 @@ Paths are repository-relative. Each material claim must be traceable to source, 
 
 ## Local-first privacy guarantee
 
-Indexing, parsing, storage, and query processing will run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Phase 0 performs no network calls during benchmark validation or tests.
+Indexing, parsing, storage, and query processing run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Phase 0 benchmark tools and the Phase 1 graph/MCP service perform no network calls.
 
 ## Expected MCP behavior
 
-The stable MCP surface is expected to provide deterministic, bounded structural queries; accept repository scope and budgets; distinguish empty results from incomplete analysis; identify stale indexes; return repository-relative evidence; expose confidence; and preserve ambiguity. Errors must be explicit and machine-readable. MCP handlers are not implemented in Phase 0.
+The stable MCP surface provides deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale indexes; returns repository-relative evidence; exposes confidence; and preserves ambiguity. Errors are explicit and machine-readable. Phase 1 implements this contract over synthetic graph data; real Java and Spring analysis remains future work.
 
 ## Evidence, ambiguity, and accuracy
 
@@ -49,4 +49,3 @@ Graphine will not claim perfect program understanding, runtime certainty from st
 ## First stable release scope
 
 The first stable release is expected to index a local Java 17+ / Spring Boot repository and serve evidence-first queries for symbols, resolved direct calls, type hierarchies, composed HTTP mappings, common constructor bean injection, Spring Data repositories/entities, application events, and transaction annotations. It should support incremental refresh, deterministic machine-readable output, and documented limits. Runtime probes, semantic embeddings, multi-language analysis, and exhaustive Spring condition evaluation are outside that initial scope unless separately promoted after evaluation.
-

@@ -1,0 +1,99 @@
+id: spring-web-001
+fixture: spring-web
+category: endpoint-flow
+question: Which controller, service, repository method, and domain record participate in POST /api/v1/events?
+difficulty: medium
+expected_capabilities: [route-resolution, call-graph, spring-repository]
+token_budget: 1000
+---
+id: spring-web-002
+fixture: spring-web
+category: request-mapping-composition
+question: Which handler serves GET /api/v1/events/{id} after composing class and method mappings?
+difficulty: medium
+expected_capabilities: [route-resolution]
+token_budget: 700
+---
+id: spring-web-003
+fixture: spring-web
+category: request-mapping-composition
+question: What is the complete route and handler for listing all events?
+difficulty: easy
+expected_capabilities: [route-resolution]
+token_budget: 500
+---
+id: spring-web-004
+fixture: spring-web
+category: request-mapping-composition
+question: What is the complete DELETE route and direct flow for deleting an event?
+difficulty: medium
+expected_capabilities: [route-resolution, call-graph]
+token_budget: 750
+---
+id: spring-web-005
+fixture: spring-web
+category: constructor-injection
+question: Which dependencies are constructor-injected into EventService?
+difficulty: easy
+expected_capabilities: [spring-bean-resolution]
+token_budget: 450
+---
+id: spring-web-006
+fixture: spring-web
+category: application-events
+question: Where is EventCreated published and which method consumes it?
+difficulty: medium
+expected_capabilities: [event-flow, call-graph]
+token_budget: 800
+---
+id: spring-web-007
+fixture: spring-web
+category: validation-annotations
+question: What validation applies to the POST event request body and its name component?
+difficulty: medium
+expected_capabilities: [annotation-analysis, route-resolution]
+token_budget: 600
+---
+id: spring-web-008
+fixture: spring-web
+category: path-variables
+question: Which endpoints bind the id path variable and what Java type is it?
+difficulty: easy
+expected_capabilities: [route-resolution, parameter-analysis]
+token_budget: 500
+---
+id: spring-web-009
+fixture: spring-web
+category: asynchronous-methods
+question: Does the fixture establish that event listener execution is asynchronous?
+difficulty: hard
+expected_capabilities: [async-analysis, ambiguity-reporting]
+token_budget: 600
+support: planned
+---
+id: spring-web-010
+fixture: spring-web
+category: security-annotations
+question: What authorization rule protects POST /api/v1/events?
+difficulty: hard
+expected_capabilities: [security-analysis, ambiguity-reporting]
+token_budget: 600
+support: planned
+---
+id: spring-web-011
+fixture: spring-web
+category: websocket-stomp-mappings
+question: Which WebSocket or STOMP destination maps to event creation?
+difficulty: hard
+expected_capabilities: [websocket-analysis, ambiguity-reporting]
+token_budget: 600
+support: planned
+---
+id: spring-web-012
+fixture: spring-web
+category: response-status
+question: Which status codes are explicitly declared for create and delete handlers?
+difficulty: easy
+expected_capabilities: [annotation-analysis, route-resolution]
+token_budget: 450
+

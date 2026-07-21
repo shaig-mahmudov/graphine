@@ -1,0 +1,117 @@
+question_id: spring-web-001
+status: answerable
+expected:
+  route: {method: POST, path: /api/v1/events}
+  handler: 'EventController#create'
+  direct_flow: ['EventController#create', 'EventService#create', 'EventRepository#save']
+  domain_records: [Event, CreateEventRequest, EventCreated]
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 15, end_line: 32}
+  - {file: src/main/java/dev/graphine/fixture/web/EventService.java, start_line: 22, end_line: 26}
+  - {file: src/main/java/dev/graphine/fixture/web/EventRepository.java, start_line: 6, end_line: 10}
+allowed_ambiguities: []
+forbidden_claims: [The repository is a Spring Data repository]
+---
+question_id: spring-web-002
+status: answerable
+expected: {route: {method: GET, path: '/api/v1/events/{id}'}, handler: 'EventController#get(long)'}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 15, end_line: 26}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-web-003
+status: answerable
+expected: {route: {method: GET, path: /api/v1/events}, handler: 'EventController#list'}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 15, end_line: 23}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-web-004
+status: answerable
+expected: {route: {method: DELETE, path: '/api/v1/events/{id}'}, direct_flow: ['EventController#delete', 'EventService#delete', 'EventRepository#deleteById']}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 34, end_line: 36}
+  - {file: src/main/java/dev/graphine/fixture/web/EventService.java, start_line: 28, end_line: 28}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-web-005
+status: answerable
+expected: {dependencies: [EventRepository, org.springframework.context.ApplicationEventPublisher]}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventService.java, start_line: 8, end_line: 17}
+allowed_ambiguities: [ApplicationEventPublisher implementation is supplied by Spring]
+forbidden_claims: []
+---
+question_id: spring-web-006
+status: answerable
+expected: {published_by: 'EventService#create', event: EventCreated, consumed_by: 'EventAuditListener#record'}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventService.java, start_line: 22, end_line: 26}
+  - {file: src/main/java/dev/graphine/fixture/web/EventAuditListener.java, start_line: 6, end_line: 11}
+allowed_ambiguities: [Other framework or external listeners are outside fixture scope]
+forbidden_claims: [Listener execution is asynchronous]
+---
+question_id: spring-web-007
+status: answerable
+expected: {parameter_annotation: '@Valid', component_annotation: '@NotBlank', component: name}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 28, end_line: 32}
+  - {file: src/main/java/dev/graphine/fixture/web/CreateEventRequest.java, start_line: 3, end_line: 5}
+allowed_ambiguities: []
+forbidden_claims: [Validation always succeeds]
+---
+question_id: spring-web-008
+status: answerable
+expected: {routes: ['GET /api/v1/events/{id}', 'DELETE /api/v1/events/{id}'], java_type: long}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 25, end_line: 36}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-web-009
+status: unsupported
+expected: {asynchronous: not-established, reason: 'No @Async or runtime evidence is present'}
+confidence_required: UNRESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventAuditListener.java, start_line: 6, end_line: 11}
+allowed_ambiguities: [External configuration could alter event dispatch]
+forbidden_claims: [The listener definitely executes asynchronously, The listener definitely executes synchronously at runtime]
+---
+question_id: spring-web-010
+status: unsupported
+expected: {authorization_rule: unavailable, reason: No security annotation or configuration exists in the fixture}
+confidence_required: UNRESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 28, end_line: 32}
+allowed_ambiguities: [External security configuration is outside fixture scope]
+forbidden_claims: [The endpoint is publicly accessible, The endpoint requires authentication]
+---
+question_id: spring-web-011
+status: unsupported
+expected: {destination: unavailable, reason: No WebSocket or STOMP mapping exists}
+confidence_required: UNRESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 15, end_line: 36}
+allowed_ambiguities: [Only HTTP controller mappings are declared]
+forbidden_claims: [An HTTP route is also a STOMP destination]
+---
+question_id: spring-web-012
+status: answerable
+expected: {create: 201, delete: 204}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/web/EventController.java, start_line: 28, end_line: 36}
+allowed_ambiguities: []
+forbidden_claims: []
+

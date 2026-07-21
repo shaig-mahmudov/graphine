@@ -1,0 +1,64 @@
+id: spring-beans-001
+fixture: spring-beans
+category: primary-bean
+question: Which PaymentProcessor is injected into CheckoutService under the declared bean metadata?
+difficulty: medium
+expected_capabilities: [spring-bean-resolution]
+token_budget: 700
+---
+id: spring-beans-002
+fixture: spring-beans
+category: qualifier
+question: Which PaymentProcessor is requested by WireCheckoutService and why?
+difficulty: easy
+expected_capabilities: [spring-bean-resolution, annotation-analysis]
+token_budget: 550
+---
+id: spring-beans-003
+fixture: spring-beans
+category: profile-beans
+question: Under which profile is WireProcessor eligible to become a bean?
+difficulty: easy
+expected_capabilities: [spring-condition-analysis]
+token_budget: 450
+---
+id: spring-beans-004
+fixture: spring-beans
+category: bean-methods
+question: Which @Bean methods and explicit bean names are declared in ProcessorConfiguration?
+difficulty: medium
+expected_capabilities: [spring-bean-discovery]
+token_budget: 600
+---
+id: spring-beans-005
+fixture: spring-beans
+category: conditional-beans
+question: What property condition controls conditionalProcessor?
+difficulty: medium
+expected_capabilities: [spring-condition-analysis]
+token_budget: 600
+---
+id: spring-beans-006
+fixture: spring-beans
+category: multiple-candidate-beans
+question: Which declared component classes implement PaymentProcessor?
+difficulty: easy
+expected_capabilities: [implementation-search, spring-bean-discovery]
+token_budget: 500
+---
+id: spring-beans-007
+fixture: spring-beans
+category: ambiguous-injection
+question: If @Primary metadata is deliberately ignored, can AmbiguousProcessorConsumer be resolved uniquely?
+difficulty: hard
+expected_capabilities: [spring-bean-resolution, ambiguity-reporting]
+token_budget: 750
+---
+id: spring-beans-008
+fixture: spring-beans
+category: constructor-injection
+question: What constructor dependency does CheckoutService declare and which method uses it?
+difficulty: easy
+expected_capabilities: [spring-bean-resolution, field-access]
+token_budget: 500
+

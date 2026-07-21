@@ -1,0 +1,76 @@
+question_id: spring-beans-001
+status: answerable
+expected: {injection_point: 'CheckoutService#CheckoutService', selected_bean: cardProcessor, selected_type: CardProcessor, reason: '@Primary'}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/CheckoutService.java, start_line: 5, end_line: 10}
+  - {file: src/main/java/dev/graphine/fixture/beans/CardProcessor.java, start_line: 6, end_line: 9}
+allowed_ambiguities: [Conditional or profile beans may be eligible but @Primary wins]
+forbidden_claims: [WireProcessor is selected]
+---
+question_id: spring-beans-002
+status: answerable
+expected: {qualifier: wireProcessor, selected_type: WireProcessor}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/WireCheckoutService.java, start_line: 6, end_line: 12}
+  - {file: src/main/java/dev/graphine/fixture/beans/WireProcessor.java, start_line: 6, end_line: 9}
+allowed_ambiguities: [Bean is only eligible when the wire profile is active]
+forbidden_claims: [The qualifier selects CardProcessor]
+---
+question_id: spring-beans-003
+status: answerable
+expected: {bean: wireProcessor, profile: wire}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/WireProcessor.java, start_line: 6, end_line: 9}
+allowed_ambiguities: []
+forbidden_claims: [The wire profile is active]
+---
+question_id: spring-beans-004
+status: answerable
+expected: {beans: [{method: auditLabel, name: auditLabel}, {method: conditionalProcessor, name: conditionalProcessor}]}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/ProcessorConfiguration.java, start_line: 7, end_line: 16}
+allowed_ambiguities: [conditionalProcessor eligibility depends on a property]
+forbidden_claims: []
+---
+question_id: spring-beans-005
+status: answerable
+expected: {property: payments.conditional, having_value: 'true', bean: conditionalProcessor}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/ProcessorConfiguration.java, start_line: 12, end_line: 16}
+allowed_ambiguities: [The property value at runtime is not provided]
+forbidden_claims: [The conditional bean is definitely active]
+---
+question_id: spring-beans-006
+status: answerable
+expected: {component_implementations: [CardProcessor, WireProcessor]}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/CardProcessor.java, start_line: 6, end_line: 9}
+  - {file: src/main/java/dev/graphine/fixture/beans/WireProcessor.java, start_line: 6, end_line: 9}
+allowed_ambiguities: [WireProcessor eligibility is profile-dependent, A conditional @Bean also returns PaymentProcessor]
+forbidden_claims: [All candidates are active in every environment]
+---
+question_id: spring-beans-007
+status: ambiguous
+expected: {unique: false, candidates: [cardProcessor, wireProcessor, conditionalProcessor]}
+confidence_required: AMBIGUOUS
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/AmbiguousProcessorConsumer.java, start_line: 3, end_line: 9}
+  - {file: src/main/java/dev/graphine/fixture/beans/ProcessorConfiguration.java, start_line: 12, end_line: 16}
+allowed_ambiguities: [Active profiles and properties determine eligible candidates, The question explicitly removes @Primary selection]
+forbidden_claims: [A unique bean is selected]
+---
+question_id: spring-beans-008
+status: answerable
+expected: {dependency: PaymentProcessor, stored_in: processor, used_by: 'CheckoutService#checkout'}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/beans/CheckoutService.java, start_line: 5, end_line: 10}
+allowed_ambiguities: [Concrete bean selection requires framework metadata]
+forbidden_claims: []
+

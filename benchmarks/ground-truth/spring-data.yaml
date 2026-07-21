@@ -1,0 +1,76 @@
+question_id: spring-data-001
+status: answerable
+expected: {parent: Customer, child: PurchaseOrder, parent_side: 'OneToMany(mappedBy=customer, cascade=ALL)', child_side: 'ManyToOne(optional=false)'}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/Customer.java, start_line: 11, end_line: 23}
+  - {file: src/main/java/dev/graphine/fixture/data/PurchaseOrder.java, start_line: 8, end_line: 20}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-data-002
+status: answerable
+expected: {repositories: [{type: CustomerRepository, entity: Customer, id: Long}, {type: PurchaseOrderRepository, entity: PurchaseOrder, id: Long}]}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/CustomerRepository.java, start_line: 6, end_line: 8}
+  - {file: src/main/java/dev/graphine/fixture/data/PurchaseOrderRepository.java, start_line: 8, end_line: 13}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: spring-data-003
+status: answerable
+expected: {entity: Customer, predicate: email equals ignoring case, cardinality: optional-single}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/CustomerRepository.java, start_line: 6, end_line: 7}
+allowed_ambiguities: []
+forbidden_claims: [The query is case-sensitive]
+---
+question_id: spring-data-004
+status: answerable
+expected: {entity: PurchaseOrder, predicate: status equals, ordering: id ascending, cardinality: list}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/PurchaseOrderRepository.java, start_line: 8, end_line: 9}
+allowed_ambiguities: []
+forbidden_claims: [Results are ordered descending]
+---
+question_id: spring-data-005
+status: answerable
+expected: {selects: PurchaseOrder, joins: customer, fetch: eager-for-query, predicate: customer.email equals named parameter email}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/PurchaseOrderRepository.java, start_line: 11, end_line: 12}
+allowed_ambiguities: [Database execution plan is not statically known]
+forbidden_claims: [The query modifies data]
+---
+question_id: spring-data-006
+status: answerable
+expected:
+  repositories_called: ['CustomerRepository#findByEmailIgnoreCase', 'CustomerRepository#save', 'PurchaseOrderRepository#save']
+  entities_written: [Customer, PurchaseOrder]
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/OrderService.java, start_line: 17, end_line: 24}
+  - {file: src/main/java/dev/graphine/fixture/data/Customer.java, start_line: 19, end_line: 23}
+allowed_ambiguities: [CustomerRepository.save only executes when lookup is empty, ORM cascade behavior depends on runtime persistence context]
+forbidden_claims: [Customer is always newly inserted]
+---
+question_id: spring-data-007
+status: answerable
+expected: {transactional_methods: [create, openOrders, complete], read_only: [openOrders], read_write: [create, complete]}
+confidence_required: FRAMEWORK_RESOLVED
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/OrderService.java, start_line: 17, end_line: 34}
+allowed_ambiguities: [Proxy interception at runtime is not proven]
+forbidden_claims: [Annotation presence proves runtime interception]
+---
+question_id: spring-data-008
+status: ambiguous
+expected: {runtime_transaction: not-proven, static_annotation: '@Transactional'}
+confidence_required: AMBIGUOUS
+evidence:
+  - {file: src/main/java/dev/graphine/fixture/data/OrderService.java, start_line: 31, end_line: 34}
+allowed_ambiguities: [Runtime proxying and call path are not observed]
+forbidden_claims: [The method definitely executes inside a transaction, The annotation has no effect]

@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0.0",
+  "report_kind": "corpus",
+  "corpus": {
+    "question_count": 44,
+    "ground_truth_count": 44,
+    "by_fixture": {
+      "java-core": 16,
+      "spring-beans": 8,
+      "spring-data": 8,
+      "spring-web": 12
+    },
+    "by_category": {
+      "ambiguous-injection": 1,
+      "annotations": 1,
+      "application-events": 1,
+      "asynchronous-methods": 1,
+      "bean-methods": 1,
+      "class-interface-discovery": 1,
+      "conditional-beans": 1,
+      "constructor-calls": 1,
+      "constructor-injection": 2,
+      "derived-query-methods": 2,
+      "direct-callees": 2,
+      "direct-callers": 1,
+      "endpoint-flow": 1,
+      "entity-write-flow": 1,
+      "explicit-query-methods": 1,
+      "field-reads-writes": 1,
+      "generic-parameter-resolution": 1,
+      "inheritance": 1,
+      "interface-implementations": 1,
+      "jpa-entities-relationships": 1,
+      "lambdas-method-references": 1,
+      "method-overload-resolution": 1,
+      "method-override-resolution": 1,
+      "multiple-candidate-beans": 1,
+      "nested-classes": 1,
+      "path-variables": 1,
+      "primary-bean": 1,
+      "profile-beans": 1,
+      "qualifier": 1,
+      "records": 1,
+      "request-mapping-composition": 3,
+      "response-status": 1,
+      "security-annotations": 1,
+      "spring-data-repositories": 1,
+      "transaction-annotations": 1,
+      "transaction-runtime": 1,
+      "unresolved-external-dependencies": 1,
+      "validation-annotations": 1,
+      "websocket-stomp-mappings": 1
+    },
+    "by_difficulty": {
+      "easy": 16,
+      "hard": 9,
+      "medium": 19
+    },
+    "by_status": {
+      "ambiguous": 3,
+      "answerable": 37,
+      "unresolved": 1,
+      "unsupported": 3
+    },
+    "by_support": {
+      "phase-0": 40,
+      "planned": 4
+    },
+    "total_token_budget": 24850
+  },
+  "metrics": {
+    "correctness": null,
+    "precision": null,
+    "recall": null,
+    "unsupported_claims": null,
+    "unresolved_count": null,
+    "input_tokens": null,
+    "output_tokens": null,
+    "tool_calls": null,
+    "file_reads": null,
+    "files_opened": null,
+    "wall_time_ms": null,
+    "query_latency_ms": null
+  }
+}

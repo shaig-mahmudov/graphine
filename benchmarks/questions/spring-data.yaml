@@ -1,0 +1,64 @@
+id: spring-data-001
+fixture: spring-data
+category: jpa-entities-relationships
+question: What is the bidirectional relationship between Customer and PurchaseOrder?
+difficulty: medium
+expected_capabilities: [jpa-analysis]
+token_budget: 750
+---
+id: spring-data-002
+fixture: spring-data
+category: spring-data-repositories
+question: Which entity and ID types are managed by each repository?
+difficulty: easy
+expected_capabilities: [spring-data]
+token_budget: 500
+---
+id: spring-data-003
+fixture: spring-data
+category: derived-query-methods
+question: Interpret the derived query CustomerRepository.findByEmailIgnoreCase.
+difficulty: medium
+expected_capabilities: [spring-data, query-analysis]
+token_budget: 600
+---
+id: spring-data-004
+fixture: spring-data
+category: derived-query-methods
+question: Interpret PurchaseOrderRepository.findByStatusOrderByIdAsc.
+difficulty: medium
+expected_capabilities: [spring-data, query-analysis]
+token_budget: 600
+---
+id: spring-data-005
+fixture: spring-data
+category: explicit-query-methods
+question: What does findDetailedByCustomerEmail select and fetch?
+difficulty: hard
+expected_capabilities: [spring-data, jpql-analysis]
+token_budget: 750
+---
+id: spring-data-006
+fixture: spring-data
+category: entity-write-flow
+question: Which repositories and entities may be written by OrderService.create?
+difficulty: hard
+expected_capabilities: [call-graph, spring-data, jpa-analysis]
+token_budget: 900
+---
+id: spring-data-007
+fixture: spring-data
+category: transaction-annotations
+question: Which OrderService methods declare transactions and which one is read-only?
+difficulty: medium
+expected_capabilities: [transaction-analysis, annotation-analysis]
+token_budget: 650
+---
+id: spring-data-008
+fixture: spring-data
+category: transaction-runtime
+question: Is OrderService.complete proven to execute inside a transaction at runtime?
+difficulty: hard
+expected_capabilities: [transaction-analysis, ambiguity-reporting]
+token_budget: 650
+support: planned

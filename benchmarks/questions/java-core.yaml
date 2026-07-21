@@ -1,0 +1,128 @@
+id: java-core-001
+fixture: java-core
+category: class-interface-discovery
+question: Which types implement the Formatter interface?
+difficulty: easy
+expected_capabilities: [symbol-discovery, implementation-search]
+token_budget: 400
+---
+id: java-core-002
+fixture: java-core
+category: method-overload-resolution
+question: Which Operations.combine overload is called by CoreScenario.run?
+difficulty: medium
+expected_capabilities: [compiler-resolution, call-graph]
+token_budget: 500
+---
+id: java-core-003
+fixture: java-core
+category: inheritance
+question: What is the superclass chain of DecoratingProcessor?
+difficulty: easy
+expected_capabilities: [type-hierarchy]
+token_budget: 350
+---
+id: java-core-004
+fixture: java-core
+category: method-override-resolution
+question: Which process method executes for the DecoratingProcessor instance in CoreScenario.run?
+difficulty: medium
+expected_capabilities: [compiler-resolution, type-hierarchy]
+token_budget: 550
+---
+id: java-core-005
+fixture: java-core
+category: direct-callers
+question: What compiled fixture method directly calls Operations.first?
+difficulty: easy
+expected_capabilities: [call-graph]
+token_budget: 350
+---
+id: java-core-006
+fixture: java-core
+category: direct-callees
+question: What project methods are directly called by CoreScenario.run?
+difficulty: medium
+expected_capabilities: [call-graph, compiler-resolution]
+token_budget: 600
+---
+id: java-core-007
+fixture: java-core
+category: constructor-calls
+question: Which project constructors are invoked by CoreScenario.run?
+difficulty: medium
+expected_capabilities: [call-graph, constructor-resolution]
+token_budget: 500
+---
+id: java-core-008
+fixture: java-core
+category: field-reads-writes
+question: Which methods write and read Operations.invocationCount?
+difficulty: medium
+expected_capabilities: [field-access]
+token_budget: 500
+---
+id: java-core-009
+fixture: java-core
+category: generic-parameter-resolution
+question: What concrete return type is inferred for Operations.first in CoreScenario.run?
+difficulty: hard
+expected_capabilities: [generic-resolution, compiler-resolution]
+token_budget: 650
+---
+id: java-core-010
+fixture: java-core
+category: records
+question: What components does the nested Operations.Pair record declare?
+difficulty: easy
+expected_capabilities: [symbol-discovery, record-analysis]
+token_budget: 350
+---
+id: java-core-011
+fixture: java-core
+category: annotations
+question: Which runtime annotation and value are present on Operations?
+difficulty: easy
+expected_capabilities: [annotation-analysis]
+token_budget: 350
+---
+id: java-core-012
+fixture: java-core
+category: nested-classes
+question: Which nested types are declared inside Operations?
+difficulty: easy
+expected_capabilities: [symbol-discovery]
+token_budget: 350
+---
+id: java-core-013
+fixture: java-core
+category: lambdas-method-references
+question: Identify the lambda and method reference used by Operations.transform.
+difficulty: medium
+expected_capabilities: [callable-analysis]
+token_budget: 550
+---
+id: java-core-014
+fixture: java-core
+category: unresolved-external-dependencies
+question: Resolve the declaration and implementation of com.vendor.missing.RemoteGateway.
+difficulty: hard
+expected_capabilities: [symbol-discovery, ambiguity-reporting]
+token_budget: 500
+---
+id: java-core-015
+fixture: java-core
+category: direct-callees
+question: Which method does BaseProcessor.process call directly?
+difficulty: easy
+expected_capabilities: [call-graph]
+token_budget: 300
+---
+id: java-core-016
+fixture: java-core
+category: interface-implementations
+question: Is there a uniquely determined Formatter implementation at the interface declaration alone?
+difficulty: medium
+expected_capabilities: [implementation-search, ambiguity-reporting]
+token_budget: 450
+

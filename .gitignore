@@ -1,4 +1,4 @@
-/target/
-fixtures/*/target/
+**/target/
 /.graphine/
 /.graphine-demo/
+/.graphine-phase2/

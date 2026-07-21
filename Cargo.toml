@@ -2,6 +2,7 @@
 members = [
     "crates/benchmark-core",
     "crates/graphine-cli",
+    "crates/graphine-analyzer-client",
     "crates/graphine-index",
     "crates/graphine-mcp",
     "crates/graphine-protocol",

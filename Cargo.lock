@@ -324,11 +324,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphine-analyzer-client"
+version = "0.1.0"
+dependencies = [
+ "graphine-index",
+ "graphine-protocol",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "graphine-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "graphine-analyzer-client",
  "graphine-index",
  "graphine-mcp",
  "graphine-protocol",

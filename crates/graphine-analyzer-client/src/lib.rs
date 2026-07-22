@@ -1,8 +1,8 @@
 use graphine_index::{AnalysisIngestion, Database};
 use graphine_protocol::{
     ANALYZER_PROTOCOL_VERSION, AnalysisCompletionStatus, AnalyzeProjectRequest, AnalyzerDiagnostic,
-    AnalyzerEvent, AnalyzerMode, AnalyzerOptions, AnalyzerSummary, GraphineConfig, GraphineError,
-    StableId, SyntheticEdge, SyntheticGraph, SyntheticNode,
+    AnalyzerEvent, AnalyzerHello, AnalyzerMode, AnalyzerOptions, AnalyzerSummary, GraphineConfig,
+    GraphineError, StableId, SyntheticEdge, SyntheticGraph, SyntheticNode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -174,9 +174,25 @@ impl AnalyzerClient {
     ///
     /// Returns unavailable, timeout, or worker errors.
     pub fn version(&self) -> Result<String, GraphineError> {
-        let mut child = self
-            .command()
-            .arg("--version")
+        self.inspect("--version")
+    }
+
+    /// Returns analyzer-reported protocol and packaged capability metadata.
+    ///
+    /// This inspection does not analyze a repository or start Maven.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable, timeout, worker, or malformed-metadata errors.
+    pub fn metadata(&self) -> Result<AnalyzerHello, GraphineError> {
+        let output = self.inspect("--metadata")?;
+        parse_analyzer_metadata(&output)
+    }
+
+    fn inspect(&self, argument: &str) -> Result<String, GraphineError> {
+        let mut command = self.command();
+        let mut child = command
+            .arg(argument)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -198,9 +214,13 @@ impl AnalyzerClient {
                     .take(4096)
                     .read_to_end(&mut bytes)
                     .map_err(|_| GraphineError::AnalyzerFailed)?;
-                return String::from_utf8(bytes)
-                    .map(|value| value.trim().to_owned())
-                    .map_err(|_| GraphineError::AnalyzerProtocol);
+                let value =
+                    String::from_utf8(bytes).map_err(|_| GraphineError::AnalyzerProtocol)?;
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(GraphineError::AnalyzerProtocol);
+                }
+                return Ok(value.to_owned());
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -334,6 +354,23 @@ impl AnalyzerClient {
         command.arg("-Xmx1024m").arg("-jar").arg(&self.worker_jar);
         command
     }
+}
+
+fn parse_analyzer_metadata(value: &str) -> Result<AnalyzerHello, GraphineError> {
+    let metadata: AnalyzerHello =
+        serde_json::from_str(value).map_err(|_| GraphineError::AnalyzerProtocol)?;
+    if metadata.analyzer_version.trim().is_empty()
+        || metadata.capabilities.iter().any(|capability| {
+            capability.trim().is_empty()
+                || capability.len() > 100
+                || capability.contains(['\0', '\n', '\r'])
+        })
+        || metadata.capabilities.iter().collect::<BTreeSet<_>>().len()
+            != metadata.capabilities.len()
+    {
+        return Err(GraphineError::AnalyzerProtocol);
+    }
+    Ok(metadata)
 }
 
 #[must_use]
@@ -720,6 +757,53 @@ mod tests {
         assert_eq!(discovery.source, "executable_lib");
         assert!(discovery.available);
         assert_eq!(discovery.searched[0], packaged);
+    }
+
+    #[test]
+    fn missing_analyzer_discovery_reports_every_searched_location() {
+        let root =
+            std::env::temp_dir().join(format!("graphine-missing-discovery-{}", std::process::id()));
+        let binary = root.join(if cfg!(windows) {
+            "graphine.exe"
+        } else {
+            "graphine"
+        });
+        let discovery =
+            discover_analyzer_jar_from(&GraphineConfig::default(), None, Some(&binary), None);
+        assert!(!discovery.available);
+        assert_eq!(discovery.source, "not_found");
+        assert_eq!(discovery.searched.len(), 2);
+    }
+
+    #[test]
+    fn analyzer_metadata_preserves_reported_capabilities_and_protocol() {
+        let metadata = parse_analyzer_metadata(
+            r#"{"protocol_version":1,"analyzer_version":"0.1.0","capabilities":["java_semantics","spring_static_semantics","maven_trusted_mode"]}"#,
+        )
+        .unwrap();
+        assert_eq!(metadata.protocol_version, ANALYZER_PROTOCOL_VERSION);
+        assert!(
+            metadata
+                .capabilities
+                .contains(&"spring_static_semantics".to_owned())
+        );
+
+        let mismatched = parse_analyzer_metadata(
+            r#"{"protocol_version":2,"analyzer_version":"old","capabilities":["java_semantics"]}"#,
+        )
+        .unwrap();
+        assert_ne!(mismatched.protocol_version, ANALYZER_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn analyzer_metadata_rejects_malformed_or_duplicate_capabilities() {
+        assert!(parse_analyzer_metadata("not json").is_err());
+        assert!(
+            parse_analyzer_metadata(
+                r#"{"protocol_version":1,"analyzer_version":"0.1.0","capabilities":["java_semantics","java_semantics"]}"#,
+            )
+            .is_err()
+        );
     }
 
     #[test]

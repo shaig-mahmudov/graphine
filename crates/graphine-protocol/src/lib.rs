@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 pub const SCHEMA_VERSION: i64 = 3;
 pub const ANALYZER_PROTOCOL_VERSION: u32 = 1;
+pub const ANALYZER_CAPABILITY_JAVA_SEMANTICS: &str = "java_semantics";
+pub const ANALYZER_CAPABILITY_SPRING_STATIC_SEMANTICS: &str = "spring_static_semantics";
+pub const ANALYZER_CAPABILITY_MAVEN_TRUSTED_MODE: &str = "maven_trusted_mode";
 pub const ANALYZER_PLACEHOLDER: &str = "synthetic-phase-1";
 pub const PROJECT_NAMESPACE: Uuid = Uuid::from_u128(0x2bbd_0781_53ac_4e83_9e4b_87ec_ad76_bf89);
 
@@ -242,7 +245,7 @@ pub struct EdgeOccurrence {
     pub metadata: Value,
 }
 
-/// Phase 2 analyzer protocol version shared by the Rust supervisor and JVM worker.
+/// Install-time analyzer metadata shared by the Rust supervisor and JVM worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzerHello {
     pub protocol_version: u32,

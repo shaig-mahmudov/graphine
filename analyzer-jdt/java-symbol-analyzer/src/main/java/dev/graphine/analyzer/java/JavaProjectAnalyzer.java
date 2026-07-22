@@ -2,6 +2,7 @@ package dev.graphine.analyzer.java;
 
 import dev.graphine.analyzer.protocol.AnalysisRequest;
 import dev.graphine.analyzer.protocol.AnalysisSummary;
+import dev.graphine.analyzer.protocol.AnalyzerCapabilities;
 import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.ProtocolWriter;
 import dev.graphine.analyzer.resolver.ProjectModel;
@@ -97,8 +98,10 @@ public final class JavaProjectAnalyzer {
         AnalysisSummary summary = new AnalysisSummary(files.size(), parsed.get(), failed.get(),
                 collector.bindingsResolved, collector.bindingsUnresolved, collector.nodeCount(), collector.edgeCount(),
                 Duration.ofNanos(System.nanoTime() - started).toMillis(), model.classpathResolutionMs(), parsingMs,
-                springMs, serializationMs, peakMemory.get(), Map.of("java_semantics", true,
-                        "spring_static_semantics", true, "spring_runtime_semantics", false), status);
+                springMs, serializationMs, peakMemory.get(), Map.of(
+                        AnalyzerCapabilities.JAVA_SEMANTICS, true,
+                        AnalyzerCapabilities.SPRING_STATIC_SEMANTICS, true,
+                        AnalyzerCapabilities.SPRING_RUNTIME_SEMANTICS, false), status);
         return new AnalysisResult(summary, status);
     }
 

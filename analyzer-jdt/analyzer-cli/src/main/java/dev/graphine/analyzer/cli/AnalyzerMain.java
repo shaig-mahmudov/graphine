@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.graphine.analyzer.java.AnalysisResult;
 import dev.graphine.analyzer.java.JavaProjectAnalyzer;
+import dev.graphine.analyzer.protocol.AnalyzerCapabilities;
 import dev.graphine.analyzer.protocol.AnalysisRequest;
 import dev.graphine.analyzer.protocol.AnalysisSummary;
 import dev.graphine.analyzer.protocol.Diagnostic;
@@ -16,29 +17,35 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public final class AnalyzerMain {
     public static final String VERSION = "0.1.0";
+    private static final int PROTOCOL_VERSION = 1;
     private static final int REQUEST_LIMIT = 1_048_576;
 
     private AnalyzerMain() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length == 1 && "--version".equals(args[0])) {
-            System.out.println("graphine-analyzer " + VERSION + " protocol 1 eclipse-jdt");
-            return;
-        }
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        if (args.length == 1 && "--version".equals(args[0])) {
+            System.out.println("graphine-analyzer " + VERSION + " protocol " + PROTOCOL_VERSION + " eclipse-jdt");
+            return;
+        }
+        if (args.length == 1 && "--metadata".equals(args[0])) {
+            mapper.writeValue(System.out, metadata());
+            return;
+        }
         ProtocolWriter writer = new ProtocolWriter(mapper,
                 new OutputStreamWriter(System.out, StandardCharsets.UTF_8));
         try {
             String line = readBoundedLine();
             AnalysisRequest request = mapper.readValue(line, AnalysisRequest.class);
             request.validate();
-            writer.emit("analysis_started", Map.of("protocol_version", 1,
+            writer.emit("analysis_started", Map.of("protocol_version", PROTOCOL_VERSION,
                     "request_id", request.requestId(), "analyzer_version", VERSION));
             List<Diagnostic> resolverDiagnostics = new ArrayList<>();
             ProjectModel model = new MavenProjectResolver().resolve(request, resolverDiagnostics::add);
@@ -46,8 +53,7 @@ public final class AnalyzerMain {
                     "fingerprint", model.fingerprint(),
                     "java_release", model.javaRelease(),
                     "classpath_resolution_ms", model.classpathResolutionMs(),
-                    "capabilities", Map.of("java_semantics", true, "spring_static_semantics", true,
-                            "spring_runtime_semantics", false),
+                    "capabilities", packagedCapabilities(),
                     "modules", model.moduleRoots().stream().map(path -> path.getFileName().toString()).toList()));
             for (var entry : model.sourceRoots().stream().collect(java.util.stream.Collectors.groupingBy(SourceRoot::moduleName)).entrySet()) {
                 SourceRoot first = entry.getValue().get(0);
@@ -74,6 +80,38 @@ public final class AnalyzerMain {
             writer.emit("analysis_failed", Map.of("code", "analysis_failed",
                     "message", message.substring(0, Math.min(500, message.length()))));
             System.exit(2);
+        }
+    }
+
+    static Map<String, Object> metadata() {
+        List<String> capabilities = packagedCapabilities().entrySet().stream()
+                .filter(Map.Entry::getValue)
+                .map(Map.Entry::getKey)
+                .toList();
+        return Map.of(
+                "protocol_version", PROTOCOL_VERSION,
+                "analyzer_version", VERSION,
+                "capabilities", capabilities);
+    }
+
+    private static Map<String, Boolean> packagedCapabilities() {
+        Map<String, Boolean> capabilities = new LinkedHashMap<>();
+        capabilities.put(AnalyzerCapabilities.JAVA_SEMANTICS,
+                classAvailable("dev.graphine.analyzer.java.JavaProjectAnalyzer"));
+        capabilities.put(AnalyzerCapabilities.SPRING_STATIC_SEMANTICS,
+                classAvailable("dev.graphine.analyzer.spring.SpringSemanticAnalyzer"));
+        capabilities.put(AnalyzerCapabilities.SPRING_RUNTIME_SEMANTICS, false);
+        capabilities.put(AnalyzerCapabilities.MAVEN_TRUSTED_MODE,
+                classAvailable("dev.graphine.analyzer.resolver.MavenProjectResolver"));
+        return capabilities;
+    }
+
+    private static boolean classAvailable(String name) {
+        try {
+            Class.forName(name, false, AnalyzerMain.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError error) {
+            return false;
         }
     }
 

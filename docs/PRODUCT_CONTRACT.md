@@ -30,7 +30,7 @@ Indexing, parsing, storage, and query processing run on the user's machine by de
 
 ## Expected MCP behavior
 
-The stable MCP surface provides deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale or partial indexes; returns repository-relative evidence; exposes confidence and dispatch metadata; and preserves ambiguity. Errors are explicit and machine-readable. Phase 2 implements this contract over real compiler-resolved Java graphs. Spring analysis remains future work.
+The current MCP surface provides seven deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale or partial indexes; returns repository-relative evidence; exposes confidence and dispatch metadata; and preserves ambiguity. Errors are explicit and machine-readable. Phase 4 implements this contract over compiler-resolved Java graphs and bounded Spring static semantics, including endpoint-context queries. These are static structural results, not runtime traces.
 
 ## Evidence, ambiguity, and accuracy
 
@@ -48,4 +48,4 @@ Graphine will not claim perfect program understanding, runtime certainty from st
 
 ## First stable release scope
 
-The first stable release is expected to index a local Java 17+ / Spring Boot repository and serve evidence-first queries for symbols, resolved direct calls, type hierarchies, composed HTTP mappings, common constructor bean injection, Spring Data repositories/entities, application events, and transaction annotations. It should support incremental refresh, deterministic machine-readable output, and documented limits. Runtime probes, semantic embeddings, multi-language analysis, and exhaustive Spring condition evaluation are outside that initial scope unless separately promoted after evaluation.
+The first stable release is expected to index supported local Java 17+ Maven / Spring Boot repositories and serve evidence-first queries for symbols, resolved direct calls, type hierarchies, composed HTTP mappings, common constructor bean injection, Spring Data repositories/entities, application events, and transaction annotations. The current implementation performs full generation-based reindexing; incremental indexing is not implemented. Deterministic machine-readable output and documented limits are required throughout. Runtime probes, semantic embeddings, multi-language analysis, and exhaustive Spring condition evaluation are outside that initial scope unless separately promoted after evaluation.

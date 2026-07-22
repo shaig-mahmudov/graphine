@@ -22,4 +22,6 @@ Opaque `v1` cursors are bound to project ID, active generation, operation, selec
 
 No MCP query starts Maven, a JVM worker, indexing, a build, a command, a runtime probe, or a network operation. Operational failures use JSON-RPC errors with safe codes and never disclose absolute repository paths.
 
+The tools do not prove runtime Spring activation, effective Spring Security behavior, transaction proxy interception, runtime-dependent conditions, or SpEL results. Such facts must remain unresolved or explicitly static/inferred.
+
 Compatibility tests cover version negotiation, lifecycle, seven-tool schema exposure, valid calls for every tool, structured content, cursor binding, token budgets, cancellation honesty, legacy shutdown/exit, and EOF.

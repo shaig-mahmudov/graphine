@@ -1,6 +1,6 @@
 # Installation and removal
 
-Graphine release archives contain the `graphine` executable and `lib/graphine-analyzer.jar`. Keep that relative layout intact, place the extracted directory on `PATH`, and verify the archive against `SHA256SUMS`. No component is downloaded automatically.
+When Graphine is distributed as a release archive, it contains the `graphine` executable and `lib/graphine-analyzer.jar`. Keep that relative layout intact, place the extracted directory on `PATH`, and verify the archive against `SHA256SUMS`. No component is downloaded automatically. The repository currently provides packaging scripts; automated reproducible release publication and signing remain beta-exit work.
 
 Analyzer discovery order is:
 
@@ -10,7 +10,7 @@ Analyzer discovery order is:
 4. `graphine-analyzer.jar` beside the executable; and
 5. the runtime-discovered development workspace target, only in debug builds.
 
-Run `graphine analyzer doctor` to see the selected source and every searched path. Run `graphine doctor` to check SQLite, Java, the analyzer protocol, Maven availability, and derived capabilities.
+Run `graphine analyzer doctor` to see the selected source, every searched path, worker-reported protocol, and packaged capability list. Run `graphine doctor` to check SQLite, Java, analyzer compatibility, Maven trusted-mode availability, explicit Gradle non-support, and derived Java/Spring capabilities. Neither command analyzes a repository or starts Maven.
 
 To uninstall, remove the extracted distribution directory. Local indexes are deliberately separate; remove the configured `data_dir` only if its registered-project history and SQLite graph are no longer needed. Graphine never modifies a Maven repository during safe analysis.
 

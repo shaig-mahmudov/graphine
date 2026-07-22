@@ -16,4 +16,6 @@ The Rust supervisor limits request size, stdout, and captured stderr; validates 
 
 MCP exposes graph facts plus bounded source bodies only through `get_evidence`. That tool accepts generation-bound indexed IDs or explicit repository-relative ranges, canonicalizes root and target, rejects symlink escape, binary/non-UTF-8 files, `.env`, private-key/credential/secret filenames, configured exclusions, oversized ranges, and byte overflow, and preserves relative paths and line numbers. It is not arbitrary filesystem access and never executes a command.
 
+These controls define repository and process boundaries; they do not establish application security correctness. In particular, static annotations and routes do not prove effective Spring Security configuration, authorization behavior, proxy interception, or runtime condition outcomes.
+
 MCP has no shell, build, network, or upload tool. Errors contain safe codes and do not reveal canonical roots. Structured logs contain tool names, project labels, generation, timing, counts, estimates, truncation, and errors—but never source code.

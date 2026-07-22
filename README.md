@@ -2,9 +2,9 @@
 
 Graphine is a local-first code-intelligence foundation and MCP server for Java and Spring Boot repositories. It gives AI coding agents compact structural facts, evidence locations, confidence, and unresolved ambiguity without uploading source code.
 
-## Current status: Phase 4 agent-optimized MCP queries
+## Current status: Phase 4 beta hardening
 
-The repository contains the Phase 0 evaluation foundation through the Phase 4 agent query and evaluation layer:
+Graphine is an advanced technical alpha moving toward a public beta. The repository contains the Phase 0 evaluation foundation through the Phase 4 agent query and evaluation layer:
 
 - product, accuracy, architecture, non-goal, and reproducible benchmark contracts;
 - versioned schemas, 44 questions, matching ground truth, and four Java 17 fixtures;
@@ -17,7 +17,7 @@ The repository contains the Phase 0 evaluation foundation through the Phase 4 ag
 - a dedicated bounded Spring pass for stereotypes, beans/injection, routes, repositories/entities, configuration keys, and static events; and
 - bounded safe Maven parent/property/reactor/cache resolution, content-based fingerprints, executable-relative analyzer packaging, derived doctor capabilities, automated graph accuracy evaluation, cross-platform CI/E2E, and a deterministic medium corpus.
 
-Graphine does **not** start Spring or make runtime-confirmed, effective-security, or transaction-proxy claims. There is no Gradle support, embedding model, graph database, runtime probe, remote service, or built-in model provider. See the checked-in accuracy/performance reports, [MCP tools](docs/MCP_TOOLS.md), and [Spring static-semantics boundary](docs/SPRING_STATIC_SEMANTICS.md).
+Graphine does **not** start Spring or make runtime-confirmed, effective-security, or transaction-proxy claims. There is no Gradle support, incremental indexing, embedding model, graph database, runtime probe, remote transport, operating-system sandbox, or built-in model provider. Checked-in accuracy reports cover only the named deterministic fixtures and do not establish arbitrary-project accuracy. See [beta readiness](docs/BETA_READINESS.md), [MCP tools](docs/MCP_TOOLS.md), and the [Spring static-semantics boundary](docs/SPRING_STATIC_SEMANTICS.md).
 
 ## Build and run
 
@@ -30,6 +30,7 @@ cargo run -p graphine-cli -- --data-dir .graphine db migrate
 cargo run -p graphine-cli -- --data-dir .graphine register fixtures/java-core --name java-core
 cargo run -p graphine-cli -- --data-dir .graphine analyze java-core --mode safe
 cargo run -p graphine-cli -- --data-dir .graphine status java-core
+cargo run -p graphine-cli -- --data-dir .graphine doctor
 cargo run -p graphine-cli -- --data-dir .graphine serve
 ```
 
@@ -44,18 +45,20 @@ cargo run -p benchmark-core -- validate
 cargo run -p benchmark-core -- stats
 cargo run -p benchmark-core -- report --output benchmarks/reports/corpus.json
 cargo run -p benchmark-core -- compare-agents --baseline baseline.json --graphine graphine.json --output benchmarks/reports/phase4-agent-comparison.json
-powershell -File scripts/evaluate-java-accuracy.ps1
-powershell -File scripts/evaluate-spring-accuracy.ps1
-powershell -File scripts/test-phase2-e2e.ps1
-powershell -File scripts/test-phase3-e2e.ps1
-powershell -File scripts/benchmark-medium.ps1
-powershell -File scripts/benchmark-spring-medium.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/evaluate-java-accuracy.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/evaluate-spring-accuracy.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-phase2-e2e.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-phase3-e2e.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/benchmark-medium.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/benchmark-spring-medium.ps1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
 The Spring fixture Maven builds require their declared dependencies. Corpus validation, safe analysis, graph queries, and MCP serving perform no network calls and never execute repository build scripts. Trusted analysis may use Maven's configured repositories.
+
+For packaged binary layout, analyzer discovery, and removal instructions, see [installation](docs/INSTALLATION.md). The repository contains packaging scripts, but a reproducible signed release workflow remains a beta exit criterion.
 
 ## Add benchmark material
 

@@ -6,12 +6,12 @@ Phase 0 remains an independent evaluation pipeline:
 fixtures -> questions + ground truth -> benchmark-core -> deterministic report
 ```
 
-Phase 2 adds source analysis without embedding a JVM in Rust:
+The current implementation keeps source analysis out of the Rust process and layers Spring semantics and agent-oriented queries over the normalized graph:
 
 ```text
 graphine-cli -> graphine-analyzer-client -> Java worker -> Maven resolver + Eclipse JDT
       |                    |                    |
-      +-> graphine-mcp -> graphine-query -> graphine-index -> SQLite
+      +-> graphine-mcp -> graphine-query (symbol + Spring endpoint packs) -> graphine-index -> SQLite
                                \             /
                                 graphine-protocol
 ```
@@ -25,10 +25,10 @@ graphine-cli -> graphine-analyzer-client -> Java worker -> Maven resolver + Ecli
 - `graphine-cli` owns configuration, local administration, explicit analyzer invocation, synthetic loading, and server startup.
 - `benchmark-core` remains independent of SQLite and MCP dependencies while validating paired baseline/Graphine session captures with deterministic claims and evidence.
 
-SQLite work is synchronous and bounded. The Phase 1 server processes STDIO requests serially, so it needs no async wrapper or global mutable state. Queries use indexed SQL and bounded neighbor reads rather than loading the graph into memory. Future concurrent transports must put synchronous SQLite calls behind an explicit blocking boundary.
+SQLite work is synchronous and bounded. The current STDIO server processes requests serially, so it needs no async wrapper or global mutable state. Queries use indexed SQL and bounded neighbor reads rather than loading the graph into memory. Remote and concurrent transports are not implemented; any future concurrent transport must put synchronous SQLite calls behind an explicit blocking boundary.
 
 Indexing uses immutable generations. The Rust client validates the complete stream in memory before opening an ingestion generation. Nodes, edges, diagnostics, analyzer metadata, `READY`, and activation are then written in one transaction. A rollback, worker crash, timeout, protocol error, or explicit `FAILED` record cannot replace the previous active graph. Partial activation is disabled by default.
 
-The worker batch-parses compilation units with bindings and recovery enabled. A visitor extracts and emits one unit at a time; complete ASTs are not retained. External nodes are created only for directly referenced types and call targets. The detailed boundary is in `ANALYZER_ARCHITECTURE.md`.
+The worker batch-parses compilation units with bindings and recovery enabled. A visitor extracts and emits one unit at a time; complete ASTs are not retained. A dedicated bounded pass derives conservative Spring facts from the already parsed units. External nodes are created only for directly referenced types and call targets. The detailed boundary is in `ANALYZER_ARCHITECTURE.md`.
 
 Phase 0 loading remains deterministic: sorted YAML, B-tree aggregation, strict schemas, relative evidence paths, and fail-fast cross-document validation.

@@ -47,3 +47,5 @@ Example configuration:
 Defaults are local-only. An empty allowed-root list permits explicit local registration anywhere the user can access; installations can restrict it. CLI administration may show canonical paths because the user explicitly requested local inspection. MCP responses do not.
 
 `analyze` is always explicit. Safe mode does not execute Maven. Trusted mode runs controlled Maven classpath resolution and therefore requires operator trust. `--allow-partial` is per invocation; the conservative default rejects partial activation. `analyzer doctor` checks that the independently packaged worker starts and speaks the supported protocol. On Windows, configure `maven_executable` as `mvn.cmd` when it is not on `PATH`.
+
+`doctor` preserves JSON output and derives `java_indexing`, `spring_static_semantics`/`spring_semantics`, and `maven_trusted_mode` from Java/Maven discovery plus the worker's `--metadata` response. It reports Gradle as unsupported and emits explicit degraded reasons for a missing worker, unavailable metadata, protocol mismatch, or absent required analyzer capability. Doctor inspection does not analyze a repository or start Maven.

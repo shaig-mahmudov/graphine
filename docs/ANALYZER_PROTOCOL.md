@@ -22,3 +22,5 @@ analysis_completed
 Rust rejects unknown/malformed lines, unsupported versions, wrong request IDs, events before start or after completion, duplicate IDs/edges, unknown edge endpoints, absolute/traversing paths, mismatched summary counts, output overflow, incomplete streams, and nonzero worker exits. Protocol types contain no JDT objects or serialization keys.
 
 Version 1 is defined in `graphine-protocol` and mirrored by `analyzer-protocol`. Phase 3 uses additive metadata and graph kinds, so it remains wire-compatible; any incompatible change still requires a new protocol version and explicit client support.
+
+The non-analysis `--metadata` command returns one JSON object containing `protocol_version`, `analyzer_version`, and packaged `capabilities`. It does not accept a project, resolve a classpath, or start Maven. Doctor checks compare the reported version with the supervisor's supported protocol before advertising Java or Spring capability.

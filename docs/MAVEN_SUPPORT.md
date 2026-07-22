@@ -14,7 +14,7 @@
 | Full dependency classpath | no | yes | fixed Maven `dependency:build-classpath` command |
 | Java release/source property | basic | basic | release, `java.version`, source, or compiler-plugin release |
 | Custom source plugins/profiles | no | not claimed | only standard/explicitly recognized roots |
-| Gradle | no | no | outside Phase 2 |
+| Gradle | no | no | unsupported |
 
 Safe mode treats absent artifacts as diagnostics and lets JDT recover unresolved bindings. Trusted mode may download according to Maven settings and execute Maven/plugin code; see `SAFE_TRUSTED.md`.
 

@@ -1,6 +1,6 @@
 # Spring static semantics
 
-Phase 3 converts compiler facts into conservative Spring framework facts without starting Spring. The `spring-static-analyzer` receives the JDT compilation units already parsed by the Java analyzer, stores a bounded normalized intermediate model, and emits into the same language-neutral graph sink.
+The Phase 3 analyzer, used by the current Phase 4 query layer, converts compiler facts into conservative Spring framework facts without starting Spring. The `spring-static-analyzer` receives the JDT compilation units already parsed by the Java analyzer, stores a bounded normalized intermediate model, and emits into the same language-neutral graph sink.
 
 ## Supported facts
 
@@ -18,11 +18,13 @@ Every derived node or edge has `spring-static-v1` provenance and repository-rela
 
 ## Confidence boundary
 
-`FRAMEWORK_RESOLVED` means a deterministic static Spring rule succeeded. `STATIC_INFERRED` covers unknown scan roots, profiles, conditions, conditional control flow, and runtime proxy/context assumptions. `AMBIGUOUS` means multiple valid candidates or handlers remain. Missing constants, symbols, qualifiers, domains, relationships, or property keys produce structured diagnostics. Phase 3 never emits `RUNTIME_CONFIRMED`.
+`FRAMEWORK_RESOLVED` means a deterministic static Spring rule succeeded. `STATIC_INFERRED` covers unknown scan roots, profiles, conditions, conditional control flow, and runtime proxy/context assumptions. `AMBIGUOUS` means multiple valid candidates or handlers remain. Missing constants, symbols, qualifiers, domains, relationships, or property keys produce structured diagnostics. The static analyzer never emits `RUNTIME_CONFIRMED`.
 
 ## Deliberate limits
 
-Graphine does not reproduce the Spring condition evaluator, run component scanning, evaluate SpEL, start an application, inspect environment values, infer effective security, prove transaction interception, execute repository queries, compare database migrations, or implement the Phase 4 endpoint MCP tool. Complex generic factories, custom runtime bean registrars, dynamic route registration, full JPQL/SQL parsing, and runtime event ordering remain unresolved.
+Graphine does not reproduce the Spring condition evaluator, run component scanning, evaluate SpEL, start an application, inspect environment values, infer effective security, prove transaction interception or proxy behavior, execute repository queries, or compare database migrations. Complex generic factories, custom runtime bean registrars, dynamic route registration, full JPQL/SQL parsing, and runtime event ordering remain unresolved.
+
+Phase 4's `get_endpoint_context` tool groups the stored route, handler, call, dependency, data-access, event, validation, configuration, ambiguity, and evidence facts. It returns possible static structural flow, never a runtime execution trace or proof of effective Spring configuration.
 
 ## Verification
 

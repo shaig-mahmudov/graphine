@@ -1188,9 +1188,10 @@ fn add_edge_evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graphine_index::Database;
+    use graphine_index::{AnalysisIngestion, Database};
     use graphine_protocol::{
-        EdgeOccurrence, GraphineConfig, SyntheticEdge, SyntheticGraph, SyntheticNode,
+        AnalyzerSummary, EdgeOccurrence, GraphineConfig, SyntheticEdge, SyntheticGraph,
+        SyntheticNode,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1562,6 +1563,63 @@ mod tests {
         assert!(truncate_array_at_path(&mut value, "data_access.reads"));
         assert_eq!(value["data_access"]["reads"], json!(["A"]));
         assert_eq!(value["data_access"]["reads_omitted_count"], 1);
+    }
+
+    #[test]
+    fn index_status_surfaces_stale_and_partial_generation_state() {
+        let (mut database, config, _) = fixture();
+        database.mark_stale("phase4").unwrap();
+        let stale = QueryService::new(&database, &config)
+            .index_status(&super::super::IndexStatusRequest {
+                project: "phase4".to_owned(),
+                token_budget: Some(1_200),
+            })
+            .unwrap();
+        assert!(stale.stale);
+        assert!(stale.result["stale"].as_bool().unwrap());
+
+        let graph = SyntheticGraph {
+            project: "phase4".to_owned(),
+            nodes: vec![node(
+                "type:app.Partial",
+                "TYPE",
+                "app.Partial",
+                Some("Controller.java"),
+                Confidence::CompilerResolved,
+                json!({"source_set":"main"}),
+            )],
+            edges: Vec::new(),
+        };
+        database
+            .load_analysis(
+                "phase4",
+                &graph,
+                &AnalysisIngestion {
+                    protocol_version: 1,
+                    analyzer_version: "test".to_owned(),
+                    source_fingerprint: "partial".to_owned(),
+                    partial: true,
+                    summary: AnalyzerSummary {
+                        files_discovered: 2,
+                        files_parsed: 1,
+                        files_failed: 1,
+                        nodes_emitted: 1,
+                        status: "partial".to_owned(),
+                        ..AnalyzerSummary::default()
+                    },
+                    diagnostics: Vec::new(),
+                },
+            )
+            .unwrap();
+        let partial = QueryService::new(&database, &config)
+            .index_status(&super::super::IndexStatusRequest {
+                project: "phase4".to_owned(),
+                token_budget: Some(1_200),
+            })
+            .unwrap();
+        assert!(partial.partial);
+        assert_eq!(partial.completeness.status, "partial");
+        assert!(partial.result["partial"].as_bool().unwrap());
     }
 
     #[test]

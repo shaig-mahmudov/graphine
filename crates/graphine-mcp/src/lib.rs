@@ -318,9 +318,20 @@ mod tests {
     use super::*;
     use graphine_protocol::{Confidence, SyntheticEdge, SyntheticGraph, SyntheticNode};
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_SERVER_FIXTURE: AtomicU64 = AtomicU64::new(1);
+
+    fn fixture_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "graphine-mcp-{}-{}",
+            std::process::id(),
+            NEXT_SERVER_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     fn server() -> McpServer {
-        let root = std::env::temp_dir().join(format!("graphine-mcp-{}", std::process::id()));
+        let root = fixture_root();
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("Controller.java"), "class Controller {}\n").unwrap();
         let mut database = Database::open_in_memory().unwrap();

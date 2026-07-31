@@ -1,8 +1,8 @@
 use super::{CursorBinding, QueryService, decode_cursor, encode_cursor, estimated_tokens};
 use graphine_index::{EdgeRecord, EvidenceLocation, IndexStatus, NodeRecord};
 use graphine_protocol::{
-    Budget, Completeness, Confidence, GraphineError, Pagination, ResponseEnvelope, TruncationState,
-    UncertaintyState,
+    Budget, Completeness, Confidence, GraphineError, Pagination, ProjectLanguage, ResponseEnvelope,
+    TruncationState, UncertaintyState,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -86,6 +86,9 @@ impl QueryService<'_> {
     ) -> Result<ResponseEnvelope, GraphineError> {
         let budget = self.budget(request.token_budget)?;
         let status = self.database.status(&request.project)?;
+        if status.project.language == ProjectLanguage::Rust {
+            return Err(GraphineError::CapabilityNotSupported);
+        }
         let max_depth = request
             .max_depth
             .unwrap_or(4)
@@ -198,11 +201,10 @@ impl QueryService<'_> {
         });
         if !request.include.is_empty() {
             let object = result.as_object_mut().expect("object literal");
-            if !request.include.iter().any(|value| value == "validation") {
-                if let Some(request_pack) = object.get_mut("request").and_then(Value::as_object_mut)
-                {
-                    request_pack.remove("validation");
-                }
+            if !request.include.iter().any(|value| value == "validation")
+                && let Some(request_pack) = object.get_mut("request").and_then(Value::as_object_mut)
+            {
+                request_pack.remove("validation");
             }
             for (include, key) in [
                 ("dependencies", "dependencies"),
@@ -720,26 +722,23 @@ impl QueryService<'_> {
         if !owner.ends_with("Repository") {
             return None;
         }
-        if method.simple_name.starts_with("save") {
-            if let Some(parameter) = method
+        if method.simple_name.starts_with("save")
+            && let Some(parameter) = method
                 .metadata
                 .get("parameter_types")
                 .and_then(Value::as_array)
                 .and_then(|parameters| parameters.first())
                 .and_then(Value::as_str)
-            {
-                if self
+            && (self
+                .database
+                .node_in_status(status, &format!("type:{parameter}"))
+                .is_ok()
+                || self
                     .database
-                    .node_in_status(status, &format!("type:{parameter}"))
-                    .is_ok()
-                    || self
-                        .database
-                        .node_in_status(status, &format!("entity:{parameter}"))
-                        .is_ok()
-                {
-                    return Some(parameter.to_owned());
-                }
-            }
+                    .node_in_status(status, &format!("entity:{parameter}"))
+                    .is_ok())
+        {
+            return Some(parameter.to_owned());
         }
         let domain = owner.strip_suffix("Repository")?;
         (self
@@ -776,19 +775,18 @@ impl QueryService<'_> {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        if let Some(body_type) = body_type {
-            if let Ok(dto) = self
+        if let Some(body_type) = body_type
+            && let Ok(dto) = self
                 .database
                 .node_in_status(status, &format!("type:{body_type}"))
-            {
-                validation.extend(
-                    dto.metadata
-                        .get("validation_components")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-            }
+        {
+            validation.extend(
+                dto.metadata
+                    .get("validation_components")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
         Ok(json!({
             "body_type": body_type,
@@ -1212,6 +1210,7 @@ mod tests {
             simple_name: id.split(['#', ':']).next_back().map(str::to_owned),
             module_name: Some("app".to_owned()),
             package_name: Some("app.event".to_owned()),
+            namespace_path: Some("app.event".to_owned()),
             file_path: file.map(str::to_owned),
             start_line: file.map(|_| 1),
             end_line: file.map(|_| 4),
@@ -1498,7 +1497,12 @@ mod tests {
         ];
         let mut database = Database::open_in_memory().unwrap();
         database
-            .register_project(&root, Some("phase4"), &[])
+            .register_project(
+                &root,
+                Some("phase4"),
+                graphine_protocol::ProjectLanguage::Java,
+                &[],
+            )
             .unwrap();
         database
             .load_synthetic(
@@ -1524,6 +1528,7 @@ mod tests {
                 registered_at_ms: 0,
                 source_fingerprint: None,
                 analyzer_version: "test".to_owned(),
+                language: graphine_protocol::ProjectLanguage::Java,
                 schema_version: 3,
             },
             active_generation: Some(7),
@@ -1537,6 +1542,7 @@ mod tests {
             diagnostic_count: 0,
             partial: false,
             analyzer_protocol_version: None,
+            analyzer_name: None,
             analysis_summary: None,
         };
         let location = EvidenceLocation {
@@ -1595,8 +1601,10 @@ mod tests {
                 "phase4",
                 &graph,
                 &AnalysisIngestion {
-                    protocol_version: 1,
+                    protocol_version: graphine_protocol::ANALYZER_PROTOCOL_VERSION,
+                    analyzer_name: "graphine-java-jdt".to_owned(),
                     analyzer_version: "test".to_owned(),
+                    language: graphine_protocol::ProjectLanguage::Java,
                     source_fingerprint: "partial".to_owned(),
                     partial: true,
                     summary: AnalyzerSummary {

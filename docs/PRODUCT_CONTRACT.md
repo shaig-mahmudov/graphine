@@ -2,9 +2,9 @@
 
 ## Problem and users
 
-AI coding agents often discover Java and Spring structure by repeatedly searching and opening source files. That workflow spends tokens on syntax rather than verified relationships and can turn framework inference into unjustified certainty. Graphine is intended for coding agents and the developers operating them on non-trivial Java and Spring Boot repositories.
+AI coding agents often discover Java, Spring, and Rust structure by repeatedly searching and opening source files. That workflow spends tokens on syntax rather than verified relationships and can turn framework or dispatch inference into unjustified certainty. Graphine is intended for coding agents and developers working on non-trivial Maven/Spring Boot and Cargo repositories.
 
-Graphine's job is to answer structural questions: route composition; controller-service-repository-entity flow; call and impact relationships; bean candidates and selection; event publication and consumption; transaction evidence; and the minimum source evidence needed to verify a claim.
+Graphine's job is to answer structural questions: call and impact relationships, types, imports, fields, traits and implementations, tests, Spring route/application flow, and the minimum source evidence needed to verify a claim.
 
 ## Agent workflow
 
@@ -26,11 +26,11 @@ Paths are repository-relative. Each material claim must be traceable to source, 
 
 ## Local-first privacy guarantee
 
-Indexing, parsing, storage, and query processing run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Safe analysis, benchmark tools, and graph/MCP queries perform no network calls; explicit trusted Maven resolution follows the operator's Maven repository configuration.
+Indexing, parsing, storage, and query processing run on the user's machine by default. Graphine will not upload repository content, derived symbols, embeddings, or query results to a Graphine-operated service. A future explicitly configured adapter may invoke a third-party service, but it must be opt-in, separately documented, and outside the local-first core. Safe analysis, benchmark tools, and graph/MCP queries perform no network calls; explicit trusted analysis follows the operator's Maven or Cargo configuration and may execute Rust build-time code.
 
 ## Expected MCP behavior
 
-The current MCP surface provides seven deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale or partial indexes; returns repository-relative evidence; exposes confidence and dispatch metadata; and preserves ambiguity. Errors are explicit and machine-readable. Phase 4 implements this contract over compiler-resolved Java graphs and bounded Spring static semantics, including endpoint-context queries. These are static structural results, not runtime traces.
+The current MCP surface provides seven deterministic, bounded structural queries; accepts repository scope and budgets; distinguishes empty results from incomplete analysis; identifies stale or partial indexes; returns repository-relative evidence; exposes confidence and dispatch metadata; and preserves ambiguity. Errors are explicit and machine-readable. The contract is implemented over compiler-resolved Java graphs, bounded Spring static semantics, and rust-analyzer-backed Cargo graphs. Endpoint context is Spring-only; general structural tools apply to both languages. These are static structural results, not runtime traces.
 
 ## Evidence, ambiguity, and accuracy
 
@@ -48,4 +48,4 @@ Graphine will not claim perfect program understanding, runtime certainty from st
 
 ## First stable release scope
 
-The first stable release is expected to index supported local Java 17+ Maven / Spring Boot repositories and serve evidence-first queries for symbols, resolved direct calls, type hierarchies, composed HTTP mappings, common constructor bean injection, Spring Data repositories/entities, application events, and transaction annotations. The current implementation performs full generation-based reindexing; incremental indexing is not implemented. Deterministic machine-readable output and documented limits are required throughout. Runtime probes, semantic embeddings, multi-language analysis, and exhaustive Spring condition evaluation are outside that initial scope unless separately promoted after evaluation.
+The first stable release indexes exactly two registered project languages: Java 17+ Maven/Spring Boot and stable Rust Cargo projects supported by the pinned analyzer. Each registration has one language. It serves evidence-first queries for normalized symbols, calls, types, implementations, imports, and fields, plus Java-only Spring facts. The current implementation performs full generation-based reindexing; incremental indexing is not implemented. Runtime probes, semantic embeddings, cross-language call inference, Rust web-framework semantics, a third language, and exhaustive Spring condition evaluation remain outside scope.

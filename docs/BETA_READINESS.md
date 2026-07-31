@@ -57,7 +57,7 @@ The public beta should not be declared until all of these measurable criteria ar
 
 - **Correctness:** Recovery bindings, static dispatch, ambiguous bean selection, dynamic routes, conditions, generics, reflection, and generated code can produce missing or conservative results. Confidence and diagnostics reduce but do not eliminate misuse by callers.
 - **Compatibility:** Fixture and generated-corpus coverage is much narrower than the Maven/Spring ecosystem. Parent POMs, profiles, plugins, modules, toolchains, Spring versions, and platform path behavior can expose untested cases.
-- **Security boundary:** Safe mode avoids Maven execution and evidence reads are contained, but there is no OS sandbox. Trusted Maven mode can execute Maven extensions/plugins or downloaded code with user permissions. Static results do not prove application security.
+- **Security boundary:** Safe mode avoids Maven/Cargo project-code execution and evidence reads are contained, but there is no OS sandbox. Trusted mode can execute Maven extensions/plugins, Cargo build scripts, procedural macros, or downloaded code with user permissions. Static results do not prove application security.
 - **Performance:** Current reports are single-environment engineering samples. Large graphs are validated in memory before ingestion, indexing is full-generation, SQLite access is synchronous, and repository-scale memory/latency ceilings are not established.
 - **Packaging:** Packaging scripts exist, but automated signed/tagged release publication, artifact provenance, upgrade testing, and broad architecture coverage are not yet demonstrated.
 

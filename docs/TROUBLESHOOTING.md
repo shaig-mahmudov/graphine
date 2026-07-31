@@ -1,6 +1,6 @@
 # Analyzer troubleshooting
 
-Run `graphine analyzer doctor` first. If it reports `analyzer_unavailable`, build `analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar` with `mvn -f analyzer-jdt/pom.xml package`, or configure `analyzer_jar` and `java_executable`.
+Run `graphine analyzer doctor --language java|rust` first. For Java, build `analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar` with `mvn -f analyzer-jdt/pom.xml package`, or configure `java_analyzer_jar` and `java_executable`. For Rust, build `graphine-rust-analyzer` or configure `rust_analyzer_worker`, `cargo_executable`, and `rustc_executable`.
 
 If safe analysis reports unresolved dependencies, inspect `graphine diagnostics <project>`. Build dependencies separately or use explicit trusted mode for a reviewed repository. Trusted failures commonly mean Maven is absent, `maven_executable` is wrong (`mvn.cmd` may be needed on Windows), repository access failed, or the timeout expired.
 

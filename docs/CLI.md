@@ -3,7 +3,7 @@
 The binary is `graphine`. Global `--config` reads local JSON; `--data-dir` overrides its data directory. `GRAPHINE_CONFIG` and `GRAPHINE_DATA_DIR` are equivalent environment options.
 
 ```text
-graphine register <path> [--name <display-name>]
+graphine register <path> [--name <display-name>] [--language auto|java|rust]
 graphine unregister <project-id-or-name>
 graphine projects
 graphine status <project-id-or-name>
@@ -11,10 +11,10 @@ graphine doctor
 graphine config
 graphine db migrate
 graphine synthetic-index <project> <fixture.json>
-graphine analyze <project> --mode safe [--allow-partial]
-graphine analyze <project> --mode trusted [--allow-partial]
-graphine analyzer doctor
-graphine analyzer version
+graphine analyze <project> --mode safe [--allow-partial] [--features <list>] [--all-features] [--no-default-features] [--target <triple>]
+graphine analyze <project> --mode trusted [--allow-partial] [Rust Cargo options]
+graphine analyzer doctor --language java|rust
+graphine analyzer version --language java|rust
 graphine diagnostics <project>
 graphine serve
 ```
@@ -35,9 +35,12 @@ Example configuration:
   "allowed_repository_roots": [],
   "sqlite_timeout_ms": 5000,
   "mcp_transport": "stdio",
-  "analyzer_jar": null,
+  "java_analyzer_jar": null,
+  "rust_analyzer_worker": null,
   "java_executable": "java",
   "maven_executable": "mvn",
+  "cargo_executable": "cargo",
+  "rustc_executable": "rustc",
   "analyzer_timeout_ms": 120000,
   "analyzer_output_limit_bytes": 67108864,
   "allow_partial_activation": false
@@ -46,6 +49,6 @@ Example configuration:
 
 Defaults are local-only. An empty allowed-root list permits explicit local registration anywhere the user can access; installations can restrict it. CLI administration may show canonical paths because the user explicitly requested local inspection. MCP responses do not.
 
-`analyze` is always explicit. Safe mode does not execute Maven. Trusted mode runs controlled Maven classpath resolution and therefore requires operator trust. `--allow-partial` is per invocation; the conservative default rejects partial activation. `analyzer doctor` checks that the independently packaged worker starts and speaks the supported protocol. On Windows, configure `maven_executable` as `mvn.cmd` when it is not on `PATH`.
+Registration defaults to `auto`: a root `pom.xml` selects Java and a root `Cargo.toml` selects Rust. Both manifests require an explicit language; neither is an error. One registration has one language. `analyze` selects the persisted backend. Rust Cargo options are rejected for Java and conflicting feature selectors are rejected. `analyzer_jar` remains a compatibility alias for `java_analyzer_jar`.
 
-`doctor` preserves JSON output and derives `java_indexing`, `spring_static_semantics`/`spring_semantics`, and `maven_trusted_mode` from Java/Maven discovery plus the worker's `--metadata` response. It reports Gradle as unsupported and emits explicit degraded reasons for a missing worker, unavailable metadata, protocol mismatch, or absent required analyzer capability. Doctor inspection does not analyze a repository or start Maven.
+`doctor` reports Java/JDT/Maven and Rust/rust-analyzer/Cargo/rustc stacks independently. Missing tooling for an unused language does not degrade otherwise healthy registered projects. `analyzer doctor --language ...` checks the selected independently packaged worker without analyzing a repository.

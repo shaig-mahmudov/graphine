@@ -1,6 +1,6 @@
 # Analyzer JSONL protocol
 
-Protocol version 1 is one request on stdin followed by independently valid JSON objects on stdout. Human diagnostics go to bounded stderr; stdout is protocol-only. The request has `protocol_version`, `request_id`, `operation: analyze_project`, canonical `project_root`, `mode`, source sets, analyzer options, Maven executable, and timeout.
+Protocol version 2 is one request on stdin followed by independently valid JSON objects on stdout. Human diagnostics go to bounded stderr; stdout is protocol-only. Every request carries `language`, common analysis options, and language-specific Java/Maven or Rust/Cargo settings. Rust settings include selected features, all/default-feature switches, target triple, Cargo executable, and rustc executable.
 
 Successful event order is:
 
@@ -15,12 +15,12 @@ analysis_summary
 analysis_completed
 ```
 
-`analysis_started` echoes the request ID and declares the worker version. Project metadata includes the source fingerprint, release, classpath timing, module list, and additive analyzer capabilities. Nodes use the public stable-ID grammar and repository-relative source ranges. Phase 3 adds `config:` IDs while reusing `type:`, `method:`, `field:`, `bean:`, and `route:` identities. Edges carry source/target IDs, kind, confidence, provenance, object-valued aggregate metadata, and a backward-compatible `occurrences` array. Diagnostics are structured unresolved or ambiguity facts rather than invented deterministic edges.
+`analysis_started` echoes the request ID and declares analyzer name, worker version, and language. Project metadata includes language, source fingerprint, modules/targets, and an object-valued effective configuration. Nodes use the public stable-ID grammar and repository-relative source ranges. Edges carry source/target IDs, kind, confidence, provenance, object-valued aggregate metadata, and an `occurrences` array. Diagnostics are structured unresolved or ambiguity facts rather than invented deterministic edges.
 
-`analysis_summary` reports discovered/parsed/failed files, resolved/unresolved binding counts, node/edge counts, classpath/parsing/Spring-semantic/serialization/total time, peak Java heap observation, capability flags, and complete/partial status. Capability fields are additive and default empty when reading older Phase 2 summaries. `analysis_completed` is required. `analysis_failed` terminates a request without graph activation.
+`analysis_summary` reports language, discovered/parsed/failed files, resolved/unresolved binding counts, node/edge counts, generic timing/resource maps, effective configuration, capability flags, and complete/partial status. `analysis_completed` is required. `analysis_failed` terminates a request without graph activation.
 
-Rust rejects unknown/malformed lines, unsupported versions, wrong request IDs, events before start or after completion, duplicate IDs/edges, unknown edge endpoints, absolute/traversing paths, mismatched summary counts, output overflow, incomplete streams, and nonzero worker exits. Protocol types contain no JDT objects or serialization keys.
+The supervisor rejects unknown/malformed lines, protocol v1, wrong-language workers, wrong request IDs, events before start or after completion, duplicate IDs/edges, unknown edge endpoints, absolute/traversing paths, mismatched summary counts, output overflow, incomplete streams, and nonzero worker exits. Validation completes before a generation transaction starts, so failure cannot replace the active graph. Protocol types contain no JDT or rust-analyzer objects.
 
-Version 1 is defined in `graphine-protocol` and mirrored by `analyzer-protocol`. Phase 3 uses additive metadata and graph kinds, so it remains wire-compatible; any incompatible change still requires a new protocol version and explicit client support.
+Version 2 is defined in `graphine-protocol` and mirrored by `analyzer-protocol`. Java and Rust use the same normalized event stream; any future incompatible change requires a new protocol version and explicit client support.
 
-The non-analysis `--metadata` command returns one JSON object containing `protocol_version`, `analyzer_version`, and packaged `capabilities`. It does not accept a project, resolve a classpath, or start Maven. Doctor checks compare the reported version with the supervisor's supported protocol before advertising Java or Spring capability.
+The non-analysis `--metadata` command returns one JSON object containing `analyzer_name`, `language`, `protocol_version`, `analyzer_version`, and packaged `capabilities`. It does not accept a project, resolve dependencies, or start Maven/Cargo. Doctor compares both language and protocol before advertising capabilities.

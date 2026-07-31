@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.86.0
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - uses: actions/cache@v4
         with:
@@ -76,7 +76,7 @@ jobs:
           cache: maven
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.86.0
+          toolchain: 1.95.0
       - uses: actions/cache@v4
         with:
           path: |
@@ -89,15 +89,17 @@ jobs:
         run: |
           bash scripts/test-phase2-e2e.sh
           bash scripts/test-phase3-e2e.sh
+          bash scripts/test-rust-e2e.sh
       - name: Windows E2E
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           ./scripts/test-phase2-e2e.ps1
           ./scripts/test-phase3-e2e.ps1
+          ./scripts/test-rust-e2e.ps1
 
   accuracy:
-    name: java-graph-accuracy
+    name: graph-accuracy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +110,7 @@ jobs:
           cache: maven
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.86.0
+          toolchain: 1.95.0
       - uses: actions/cache@v4
         with:
           path: |
@@ -118,9 +120,46 @@ jobs:
           key: accuracy-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'analyzer-jdt/pom.xml') }}
       - run: bash scripts/evaluate-java-accuracy.sh target/accuracy-reports
       - run: bash scripts/evaluate-spring-accuracy.sh target/accuracy-reports
+      - run: bash scripts/evaluate-rust-accuracy.sh target/accuracy-reports
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: java-graph-accuracy
+          name: graph-accuracy
           path: target/accuracy-reports/*.json
           if-no-files-found: error
+
+  package:
+    name: package-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Linux package and doctor smoke
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/package-release.sh target/release-dist
+          target/release-dist/graphine/graphine --data-dir target/package-doctor doctor
+      - name: Windows package and doctor smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/package-release.ps1 target/release-dist
+          ./target/release-dist/graphine/graphine.exe --data-dir target/package-doctor doctor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graphine-${{ runner.os }}
+          path: |
+            target/release-dist/*.zip
+            target/release-dist/*.tar.gz
+            target/release-dist/SHA256SUMS

@@ -4,7 +4,11 @@ use graphine_protocol::{
     AnalyzeProjectRequest, AnalyzerDiagnostic, AnalyzerMode, AnalyzerSummary, Confidence,
     EdgeOccurrence, ProjectLanguage, SyntheticEdge, SyntheticNode,
 };
-use ra_ap_hir::{ModuleDef, PathResolution, Semantics};
+use ra_ap_cfg::CfgExpr;
+use ra_ap_hir::{
+    Adt, AsAssocItem, AssocItemContainer, Function, Module, ModuleDef, PathResolution, Semantics,
+    Trait, Variant,
+};
 use ra_ap_ide_db::RootDatabase;
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
 use ra_ap_proc_macro_api::ProcMacroClient;
@@ -19,8 +23,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use walkdir::{DirEntry, WalkDir};
 
 pub(crate) struct AnalysisOutput {
@@ -51,6 +56,7 @@ struct TargetInfo {
 #[derive(Clone)]
 struct SourceUnit {
     target: TargetInfo,
+    hir_module: Option<Module>,
     path: PathBuf,
     relative_path: String,
     module_path: String,
@@ -78,6 +84,7 @@ struct SemanticWorkspace {
     database: RootDatabase,
     vfs: Vfs,
     proc_macro_client: Option<ProcMacroClient>,
+    crate_targets: HashMap<ra_ap_hir::Crate, TargetInfo>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -126,7 +133,6 @@ pub(crate) fn analyze(
         bail!("Cargo workspace contains no discoverable Rust targets");
     }
 
-    let units = discover_sources(&root, &targets, request.options.include_tests)?;
     if request.mode == AnalyzerMode::Safe
         && targets.iter().any(|target| target.kind == "custom-build")
     {
@@ -143,23 +149,23 @@ pub(crate) fn analyze(
             "safe mode indexed procedural-macro source without executing macro expansion",
         ));
     }
-    if has_excluded_cfg_items(&units, request) {
-        diagnostics.push(project_diagnostic(
-            "cfg_branch_excluded",
-            "one or more declarations were excluded by the selected Cargo features or test configuration",
-        ));
-    }
     let trusted_check_started = Instant::now();
-    if request.mode == AnalyzerMode::Trusted
-        && let Err(error) = run_trusted_cargo_check(&root, request)
-    {
-        diagnostics.push(project_diagnostic(
-            "trusted_cargo_check_failed",
-            &format!(
-                "trusted Cargo check did not complete; semantic recovery will continue: {error:#}"
-            ),
-        ));
-    }
+    let trusted_build_data = if request.mode == AnalyzerMode::Trusted {
+        match run_trusted_cargo_check(&root, request) {
+            Ok(()) => true,
+            Err(error) => {
+                diagnostics.push(project_diagnostic(
+                    "trusted_cargo_check_failed",
+                    &format!(
+                        "trusted Cargo check did not complete; semantic recovery will continue without build data or procedural macros: {error:#}"
+                    ),
+                ));
+                false
+            }
+        }
+    } else {
+        false
+    };
     let trusted_check_ms = if request.mode == AnalyzerMode::Trusted {
         elapsed_ms(trusted_check_started)
     } else {
@@ -173,7 +179,7 @@ pub(crate) fn analyze(
         ));
         None
     } else {
-        match load_semantics(&root, request) {
+        match load_semantics(&root, request, &targets, trusted_build_data) {
             Ok(workspace) => Some(workspace),
             Err(error) => {
                 diagnostics.push(project_diagnostic(
@@ -187,7 +193,20 @@ pub(crate) fn analyze(
         }
     };
     let semantic_load_ms = elapsed_ms(load_started);
-    if request.mode == AnalyzerMode::Trusted
+    let units = if let Some(workspace) = semantics.as_ref() {
+        discover_semantic_sources(&root, &targets, workspace, request.options.include_tests)?
+    } else {
+        discover_sources(&root, &targets, request.options.include_tests)?
+    };
+    let cfg_audit = audit_cfg_items(&units, semantics.as_ref());
+    if cfg_audit.excluded {
+        diagnostics.push(project_diagnostic(
+            "cfg_branch_excluded",
+            "one or more declarations were excluded by rust-analyzer's active Cargo configuration",
+        ));
+    }
+    diagnostics.extend(cfg_audit.diagnostics);
+    if trusted_build_data
         && semantics
             .as_ref()
             .is_some_and(|workspace| workspace.proc_macro_client.is_none())
@@ -197,31 +216,38 @@ pub(crate) fn analyze(
             "trusted Cargo check executed procedural macros, but rust-analyzer could not retain a procedural-macro server for semantic expansion",
         ));
     }
-    let trusted_proc_macro_expansions = if request.mode == AnalyzerMode::Trusted
-        && let Some(workspace) = semantics.as_ref()
-    {
-        ra_ap_hir::attach_db(&workspace.database, || {
-            expand_trusted_attribute_macros(&units, workspace)
-        })
-    } else {
-        0
-    };
+    let trusted_proc_macro_expansions =
+        if trusted_build_data && let Some(workspace) = semantics.as_ref() {
+            ra_ap_hir::attach_db(&workspace.database, || {
+                expand_trusted_attribute_macros(&units, workspace)
+            })
+        } else {
+            0
+        };
     let parsing_started = Instant::now();
 
     let mut graph = GraphBuilder::default();
     emit_crates_and_modules(&mut graph, &targets, &units);
-    for unit in &units {
-        collect_type_definitions(&mut graph, unit, semantics.as_ref(), request);
-    }
-    for unit in &units {
-        collect_callable_definitions(&mut graph, unit, semantics.as_ref(), request);
-    }
-    for unit in &units {
-        if let Some(workspace) = semantics.as_ref() {
-            ra_ap_hir::attach_db(&workspace.database, || {
+    if let Some(workspace) = semantics.as_ref() {
+        ra_ap_hir::attach_db(&workspace.database, || {
+            for unit in &units {
+                collect_type_definitions(&mut graph, unit, semantics.as_ref(), request);
+            }
+            for unit in &units {
+                collect_callable_definitions(&mut graph, unit, semantics.as_ref(), request);
+            }
+            for unit in &units {
                 collect_relationships(&mut graph, unit, semantics.as_ref(), request);
-            });
-        } else {
+            }
+        });
+    } else {
+        for unit in &units {
+            collect_type_definitions(&mut graph, unit, None, request);
+        }
+        for unit in &units {
+            collect_callable_definitions(&mut graph, unit, None, request);
+        }
+        for unit in &units {
             collect_relationships(&mut graph, unit, None, request);
         }
     }
@@ -349,8 +375,8 @@ fn run_trusted_cargo_check(root: &Path, request: &AnalyzeProjectRequest) -> Resu
         .arg("--target-dir")
         .arg(target_dir)
         .env("RUSTC", &request.rustc_executable)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     if request.cargo.all_features {
         command.arg("--all-features");
     } else {
@@ -366,13 +392,89 @@ fn run_trusted_cargo_check(root: &Path, request: &AnalyzeProjectRequest) -> Resu
     if let Some(target) = &request.cargo.target {
         command.arg("--target").arg(target);
     }
-    let status = command
-        .status()
+    let mut child = command
+        .spawn()
         .context("failed to start trusted Cargo check")?;
-    if !status.success() {
-        bail!("trusted Cargo check exited with {status}");
+    let timeout = trusted_cargo_timeout(request);
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to inspect trusted Cargo check")?
+        {
+            if !status.success() {
+                bail!("trusted Cargo check exited with {status}");
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            terminate_descendant_tree(&mut child);
+            bail!(
+                "trusted Cargo check exceeded its dedicated {} ms timeout",
+                timeout.as_millis()
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
     }
-    Ok(())
+}
+
+fn trusted_cargo_timeout(request: &AnalyzeProjectRequest) -> Duration {
+    Duration::from_millis((request.timeout_ms / 2).clamp(100, 120_000))
+}
+
+#[cfg(windows)]
+fn terminate_descendant_tree(child: &mut Child) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_descendant_tree(child: &mut Child) {
+    let root = child.id();
+    let descendants = Command::new("ps")
+        .args(["-eo", "pid=,ppid="])
+        .output()
+        .ok()
+        .map(|output| descendant_processes(root, &String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default();
+    let _ = child.kill();
+    if !descendants.is_empty() {
+        let mut command = Command::new("kill");
+        command.arg("-KILL").arg("--");
+        for process_id in descendants.into_iter().rev() {
+            command.arg(process_id.to_string());
+        }
+        let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn descendant_processes(root: u32, process_table: &str) -> Vec<u32> {
+    let mut children = HashMap::<u32, Vec<u32>>::new();
+    for line in process_table.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(process_id), Some(parent_id)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if let (Ok(process_id), Ok(parent_id)) = (process_id.parse(), parent_id.parse()) {
+            children.entry(parent_id).or_default().push(process_id);
+        }
+    }
+    let mut descendants = Vec::new();
+    let mut pending = vec![root];
+    while let Some(parent) = pending.pop() {
+        if let Some(processes) = children.get(&parent) {
+            descendants.extend(processes);
+            pending.extend(processes);
+        }
+    }
+    descendants
 }
 
 fn cargo_targets(root: &Path, request: &AnalyzeProjectRequest) -> Result<Vec<TargetInfo>> {
@@ -548,6 +650,7 @@ fn discover_sources(
             relative_path: relative_slash(root, &path),
             module_path: module_path(target, &path),
             target: target.clone(),
+            hir_module: None,
             path,
             text,
         });
@@ -557,6 +660,72 @@ fn discover_sources(
             .cmp(&(&right.target.crate_key, &right.relative_path))
     });
     units.dedup_by(|left, right| left.path == right.path);
+    Ok(units)
+}
+
+fn discover_semantic_sources(
+    root: &Path,
+    targets: &[TargetInfo],
+    workspace: &SemanticWorkspace,
+    include_tests: bool,
+) -> Result<Vec<SourceUnit>> {
+    let sema = Semantics::new(&workspace.database);
+    let mut units = Vec::new();
+    for (krate, target) in &workspace.crate_targets {
+        if !include_tests && matches!(target.kind.as_str(), "test" | "bench") {
+            continue;
+        }
+        for module in krate.modules(&workspace.database) {
+            let definition = sema.module_definition_node(module);
+            if SourceFile::cast(definition.value.clone()).is_none() {
+                continue;
+            }
+            let file_id = sema
+                .original_range(&definition.value)
+                .into_file_id(&workspace.database)
+                .file_id;
+            let Some(absolute_path) = workspace.vfs.file_path(file_id).as_path() else {
+                continue;
+            };
+            let path: &Path = absolute_path.as_ref();
+            if !path.starts_with(root)
+                || path.extension().is_none_or(|extension| extension != "rs")
+                || !path.is_file()
+            {
+                continue;
+            }
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("cannot read Rust source {}", path.display()))?;
+            units.push(SourceUnit {
+                target: target.clone(),
+                hir_module: Some(module),
+                path: path.to_path_buf(),
+                relative_path: relative_slash(root, path),
+                module_path: hir_module_path(module, &workspace.database),
+                text: text.clone(),
+            });
+        }
+    }
+    units.sort_by(|left, right| {
+        (
+            &left.target.crate_key,
+            &left.module_path,
+            &left.relative_path,
+        )
+            .cmp(&(
+                &right.target.crate_key,
+                &right.module_path,
+                &right.relative_path,
+            ))
+    });
+    units.dedup_by(|left, right| {
+        left.target.crate_key == right.target.crate_key
+            && left.module_path == right.module_path
+            && left.path == right.path
+    });
+    if units.is_empty() {
+        return discover_sources(root, targets, include_tests);
+    }
     Ok(units)
 }
 
@@ -596,7 +765,12 @@ fn select_target<'a>(
         })
 }
 
-fn load_semantics(root: &Path, request: &AnalyzeProjectRequest) -> Result<SemanticWorkspace> {
+fn load_semantics(
+    root: &Path,
+    request: &AnalyzeProjectRequest,
+    targets: &[TargetInfo],
+    trusted_build_data: bool,
+) -> Result<SemanticWorkspace> {
     let trusted_target_dir = (request.mode == AnalyzerMode::Trusted)
         .then(|| {
             camino::Utf8PathBuf::from_path_buf(trusted_target_directory(root))
@@ -634,8 +808,8 @@ fn load_semantics(root: &Path, request: &AnalyzeProjectRequest) -> Result<Semant
         Some(request.rustc_executable.to_string_lossy().into_owned()),
     );
     let load = LoadCargoConfig {
-        load_out_dirs_from_check: request.mode == AnalyzerMode::Trusted,
-        with_proc_macro_server: if request.mode == AnalyzerMode::Trusted {
+        load_out_dirs_from_check: trusted_build_data,
+        with_proc_macro_server: if trusted_build_data {
             ProcMacroServerChoice::Sysroot
         } else {
             ProcMacroServerChoice::None
@@ -645,11 +819,50 @@ fn load_semantics(root: &Path, request: &AnalyzeProjectRequest) -> Result<Semant
         proc_macro_processes: 1,
     };
     let (database, vfs, proc_macro_client) = load_workspace_at(root, &cargo, &load, &|_| {})?;
+    let crate_targets = ra_ap_hir::Crate::all(&database)
+        .into_iter()
+        .filter_map(|krate| {
+            target_for_hir_crate(&database, &vfs, krate, targets).map(|target| (krate, target))
+        })
+        .collect();
     Ok(SemanticWorkspace {
         database,
         vfs,
         proc_macro_client,
+        crate_targets,
     })
+}
+
+fn target_for_hir_crate(
+    database: &RootDatabase,
+    vfs: &Vfs,
+    krate: ra_ap_hir::Crate,
+    targets: &[TargetInfo],
+) -> Option<TargetInfo> {
+    let root = vfs.file_path(krate.root_file(database)).as_path()?.as_ref();
+    let display_name = krate
+        .display_name(database)
+        .map(|name| name.canonical_name().to_string());
+    let candidates = targets
+        .iter()
+        .filter(|target| same_path(&target.source, root))
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .copied()
+        .find(|target| {
+            display_name.as_ref().is_some_and(|name| {
+                target.name == *name || target.name.replace('-', "_") == name.replace('-', "_")
+            })
+        })
+        .or_else(|| {
+            if candidates.len() == 1 {
+                candidates.first().copied()
+            } else {
+                None
+            }
+        })
+        .cloned()
 }
 
 fn expand_trusted_attribute_macros(units: &[SourceUnit], workspace: &SemanticWorkspace) -> u64 {
@@ -679,31 +892,59 @@ fn collect_type_definitions(
     graph: &mut GraphBuilder,
     unit: &SourceUnit,
     semantics: Option<&SemanticWorkspace>,
-    request: &AnalyzeProjectRequest,
+    _request: &AnalyzeProjectRequest,
 ) {
-    let (file, semantic) = parse_unit(unit, semantics);
+    let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
+    let file = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
+        let path = unit
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| unit.path.clone());
+        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
+        if let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) {
+            sema.parse_guess_edition(file_id)
+        } else {
+            SourceFile::parse(&unit.text, Edition::CURRENT).tree()
+        }
+    } else {
+        SourceFile::parse(&unit.text, Edition::CURRENT).tree()
+    };
     let root_module = module_id(&unit.target.crate_key, &unit.module_path);
     for strukt in file
         .syntax()
         .descendants()
         .filter_map(ast::Struct::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &strukt, "type", &root_module, semantic);
+        let exact_id = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&strukt))
+            .and_then(|definition| {
+                semantics.and_then(|workspace| stable_for_hir_adt(workspace, definition.into()))
+            })
+            .filter(|id| stable_id_belongs_to_unit(id, unit));
+        add_named_type(graph, unit, &strukt, "type", &root_module, exact_id);
         if let Some(fields) = strukt.field_list() {
-            collect_fields(graph, unit, &strukt, &fields, semantic);
+            collect_fields(graph, unit, &strukt, &fields, semantics, sema.as_ref());
         }
     }
     for union in file
         .syntax()
         .descendants()
         .filter_map(ast::Union::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &union, "type", &root_module, semantic);
+        let exact_id = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&union))
+            .and_then(|definition| {
+                semantics.and_then(|workspace| stable_for_hir_adt(workspace, definition.into()))
+            })
+            .filter(|id| stable_id_belongs_to_unit(id, unit));
+        add_named_type(graph, unit, &union, "type", &root_module, exact_id);
         if let Some(fields) = union.record_field_list() {
             for field in fields.fields() {
-                add_field(graph, unit, &union, &field, semantic);
+                add_field(graph, unit, &union, &field, semantics, sema.as_ref());
             }
         }
     }
@@ -711,9 +952,16 @@ fn collect_type_definitions(
         .syntax()
         .descendants()
         .filter_map(ast::Enum::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &enumeration, "type", &root_module, semantic);
+        let exact_id = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&enumeration))
+            .and_then(|definition| {
+                semantics.and_then(|workspace| stable_for_hir_adt(workspace, definition.into()))
+            })
+            .filter(|id| stable_id_belongs_to_unit(id, unit));
+        add_named_type(graph, unit, &enumeration, "type", &root_module, exact_id);
         let Some(enum_name) = enumeration.name().map(|name| name.text().to_string()) else {
             continue;
         };
@@ -737,7 +985,18 @@ fn collect_type_definitions(
                     "variant",
                     &name,
                     &namespace,
-                    semantic,
+                    sema.as_ref()
+                        .and_then(|sema| sema.to_def(&variant))
+                        .and_then(|definition| {
+                            semantics.and_then(|workspace| {
+                                stable_for_hir_module_def(
+                                    workspace,
+                                    ModuleDef::EnumVariant(definition),
+                                )
+                                .map(|(id, _)| id == stable_id)
+                            })
+                        })
+                        .unwrap_or(false),
                     json!({"language":"rust","owner":owner}),
                 );
                 graph.add_edge(
@@ -756,15 +1015,22 @@ fn collect_type_definitions(
         .syntax()
         .descendants()
         .filter_map(ast::Trait::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &trait_node, "trait", &root_module, semantic);
+        let exact_id = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&trait_node))
+            .and_then(|definition| {
+                semantics.and_then(|workspace| stable_for_hir_trait(workspace, definition))
+            })
+            .filter(|id| stable_id_belongs_to_unit(id, unit));
+        add_named_type(graph, unit, &trait_node, "trait", &root_module, exact_id);
     }
     for alias in file
         .syntax()
         .descendants()
         .filter_map(ast::TypeAlias::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
         if alias
             .syntax()
@@ -800,7 +1066,7 @@ fn collect_type_definitions(
                 "associated_type",
                 &name,
                 &namespace,
-                semantic,
+                false,
                 json!({"language":"rust","owner":trait_id}),
             );
             graph.add_edge(
@@ -813,51 +1079,52 @@ fn collect_type_definitions(
                 Value::Null,
             );
         } else {
-            add_named_type(graph, unit, &alias, "type", &root_module, semantic);
+            add_named_type(graph, unit, &alias, "type", &root_module, None);
         }
     }
     for constant in file
         .syntax()
         .descendants()
         .filter_map(ast::Const::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &constant, "const", &root_module, semantic);
+        add_named_type(graph, unit, &constant, "const", &root_module, None);
     }
     for static_node in file
         .syntax()
         .descendants()
         .filter_map(ast::Static::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &static_node, "static", &root_module, semantic);
+        add_named_type(graph, unit, &static_node, "static", &root_module, None);
     }
     for macro_node in file
         .syntax()
         .descendants()
         .filter_map(ast::MacroRules::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &macro_node, "macro", &root_module, semantic);
+        add_named_type(graph, unit, &macro_node, "macro", &root_module, None);
     }
     for macro_node in file
         .syntax()
         .descendants()
         .filter_map(ast::MacroDef::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        add_named_type(graph, unit, &macro_node, "macro", &root_module, semantic);
+        add_named_type(graph, unit, &macro_node, "macro", &root_module, None);
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn collect_callable_definitions(
     graph: &mut GraphBuilder,
     unit: &SourceUnit,
     semantics: Option<&SemanticWorkspace>,
-    request: &AnalyzeProjectRequest,
+    _request: &AnalyzeProjectRequest,
 ) {
     let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
-    let (file, semantic) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
+    let (file, _) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
         let path = unit
             .path
             .canonicalize()
@@ -881,19 +1148,22 @@ fn collect_callable_definitions(
         .syntax()
         .descendants()
         .filter_map(ast::Fn::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
         let Some(name) = function.name().map(|name| name.text().to_string()) else {
             continue;
         };
         let namespace = namespace_for(unit, function.syntax());
-        let function_resolved = semantic
-            && sema
-                .as_ref()
-                .and_then(|sema| sema.to_def(&function))
-                .is_some();
-        let (kind, stable_id, owner, trait_owner) =
-            callable_identity(graph, unit, &function, &namespace, &name);
+        let hir_function = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&function))
+            .filter(|definition| hir_function_belongs_to_unit(*definition, unit, semantics));
+        let exact_identity = semantics
+            .zip(hir_function)
+            .and_then(|(workspace, definition)| hir_callable_identity(workspace, definition));
+        let function_resolved = exact_identity.is_some();
+        let (kind, stable_id, owner, trait_owner) = exact_identity
+            .unwrap_or_else(|| callable_identity(graph, unit, &function, &namespace, &name));
         let metadata = json!({
             "language":"rust",
             "signature":function_signature(&function),
@@ -926,19 +1196,38 @@ fn collect_callable_definitions(
             Value::Null,
         );
         if let Some(trait_id) = trait_owner {
+            let exact_trait_method =
+                semantics
+                    .zip(hir_function)
+                    .and_then(|(workspace, implementation_function)| {
+                        let database = &workspace.database;
+                        let trait_ = implementation_function
+                            .as_assoc_item(database)?
+                            .implemented_trait(database)?;
+                        let trait_function =
+                            trait_.function(database, implementation_function.name(database))?;
+                        stable_for_hir_function(workspace, trait_function)
+                    });
             let prefix = format!(
                 "method:{}#",
                 trait_id.strip_prefix("trait:").unwrap_or(&trait_id)
             );
-            let trait_method = graph
-                .unique_named(&name, Some("method"))
-                .find(|id| id.starts_with(&prefix));
+            let exact_trait_method_available = exact_trait_method
+                .as_ref()
+                .is_some_and(|id| graph.nodes.contains_key(id));
+            let trait_method = exact_trait_method
+                .filter(|id| graph.nodes.contains_key(id))
+                .or_else(|| {
+                    graph
+                        .unique_named(&name, Some("method"))
+                        .find(|id| id.starts_with(&prefix))
+                });
             if let Some(trait_method) = trait_method {
                 graph.add_edge(
                     &stable_id,
                     &trait_method,
                     "IMPLEMENTS_METHOD",
-                    if function_resolved {
+                    if function_resolved && exact_trait_method_available {
                         Confidence::CompilerResolved
                     } else {
                         Confidence::StaticInferred
@@ -952,7 +1241,7 @@ fn collect_callable_definitions(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::redundant_closure_for_method_calls, clippy::too_many_lines)]
 fn collect_relationships(
     graph: &mut GraphBuilder,
     unit: &SourceUnit,
@@ -960,7 +1249,7 @@ fn collect_relationships(
     request: &AnalyzeProjectRequest,
 ) {
     let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
-    let (file, semantic) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
+    let (file, _) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
         let path = unit
             .path
             .canonicalize()
@@ -985,13 +1274,37 @@ fn collect_relationships(
         .syntax()
         .descendants()
         .filter_map(ast::Impl::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
-        let implementation_resolved = semantic
-            && sema
-                .as_ref()
-                .and_then(|sema| sema.to_def(&implementation))
-                .is_some();
+        let hir_implementation = sema.as_ref().and_then(|sema| sema.to_def(&implementation));
+        let exact_implementation =
+            semantics
+                .zip(hir_implementation)
+                .and_then(|(workspace, implementation)| {
+                    let type_id = stable_for_hir_adt(
+                        workspace,
+                        implementation.self_ty(&workspace.database).as_adt()?,
+                    )?;
+                    let trait_id = stable_for_hir_trait(
+                        workspace,
+                        implementation.trait_(&workspace.database)?,
+                    )?;
+                    (graph.nodes.contains_key(&type_id) && graph.nodes.contains_key(&trait_id))
+                        .then_some((type_id, trait_id))
+                });
+        if let Some((type_id, trait_id)) = exact_implementation {
+            graph.add_edge(
+                &type_id,
+                &trait_id,
+                "IMPLEMENTS",
+                Confidence::CompilerResolved,
+                unit,
+                implementation.syntax(),
+                json!({"unsafe":implementation.unsafe_token().is_some()}),
+            );
+            graph.bindings_resolved += 1;
+            continue;
+        }
         let Some(self_name) = implementation
             .self_ty()
             .and_then(|ty| final_name(&ty.syntax().to_string()))
@@ -1010,15 +1323,12 @@ fn collect_relationships(
                 &type_id,
                 &trait_id,
                 "IMPLEMENTS",
-                if implementation_resolved {
-                    Confidence::CompilerResolved
-                } else {
-                    Confidence::StaticInferred
-                },
+                Confidence::StaticInferred,
                 unit,
                 implementation.syntax(),
                 json!({"unsafe":implementation.unsafe_token().is_some()}),
             );
+            graph.bindings_unresolved += 1;
         }
     }
 
@@ -1026,13 +1336,21 @@ fn collect_relationships(
         .syntax()
         .descendants()
         .filter_map(ast::Fn::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
         let Some(name) = function.name().map(|name| name.text().to_string()) else {
             continue;
         };
         let namespace = namespace_for(unit, function.syntax());
-        let (_, source_id, _, _) = callable_identity(graph, unit, &function, &namespace, &name);
+        let exact_identity = sema
+            .as_ref()
+            .and_then(|sema| sema.to_def(&function))
+            .filter(|definition| hir_function_belongs_to_unit(*definition, unit, semantics))
+            .and_then(|definition| {
+                semantics.and_then(|workspace| hir_callable_identity(workspace, definition))
+            });
+        let (_, source_id, _, _) = exact_identity
+            .unwrap_or_else(|| callable_identity(graph, unit, &function, &namespace, &name));
         if !graph.nodes.contains_key(&source_id) {
             continue;
         }
@@ -1057,25 +1375,31 @@ fn collect_relationships(
             let Some(target_name) = final_name(&path.syntax().to_string()) else {
                 continue;
             };
-            let resolved_semantically = semantic
-                && sema
-                    .as_ref()
-                    .and_then(|sema| sema.resolve_path(&path))
-                    .is_some_and(|resolution| {
-                        matches!(
-                            resolution,
-                            PathResolution::Def(
-                                ModuleDef::Function(_)
-                                    | ModuleDef::Adt(_)
-                                    | ModuleDef::EnumVariant(_)
-                            )
-                        )
-                    });
-            let target = graph
-                .unique_named(&target_name, Some("function"))
-                .chain(graph.unique_named(&target_name, Some("method")))
-                .next();
-            if let Some(target) = target {
+            let resolution = sema.as_ref().and_then(|sema| sema.resolve_path(&path));
+            if let Some((target, target_kind)) = exact_path_target(graph, semantics, resolution)
+                && matches!(target_kind, "function" | "method" | "type" | "variant")
+            {
+                let kind = if matches!(target_kind, "type" | "variant") {
+                    "CONSTRUCTS"
+                } else {
+                    "CALLS"
+                };
+                graph.add_resolved_edge(&source_id, &target, kind, true, unit, call.syntax());
+            } else if resolution.is_some() {
+                graph.bindings_unresolved += 1;
+                graph.diagnostics.push(symbol_diagnostic(
+                    unit,
+                    call.syntax(),
+                    "resolved_target_not_indexed",
+                    &target_name,
+                    "rust-analyzer resolved the call, but the exact HIR target has no Graphine node in this registered project",
+                ));
+            } else if let Some(target) = graph
+                .first_named(&target_name, Some("function"))
+                .or_else(|| graph.first_named(&target_name, Some("method")))
+                .or_else(|| graph.first_named(&target_name, Some("type")))
+                .or_else(|| graph.first_named(&target_name, Some("variant")))
+            {
                 let kind = if graph
                     .nodes
                     .get(&target)
@@ -1085,14 +1409,7 @@ fn collect_relationships(
                 } else {
                     "CALLS"
                 };
-                graph.add_resolved_edge(
-                    &source_id,
-                    &target,
-                    kind,
-                    resolved_semantically,
-                    unit,
-                    call.syntax(),
-                );
+                graph.add_resolved_edge(&source_id, &target, kind, false, unit, call.syntax());
             } else {
                 graph.bindings_unresolved += 1;
                 graph.diagnostics.push(symbol_diagnostic(
@@ -1113,77 +1430,83 @@ fn collect_relationships(
             let Some(target_name) = call.name_ref().map(|name| name.text().to_string()) else {
                 continue;
             };
-            let resolved_semantically = semantic
-                && sema
-                    .as_ref()
-                    .and_then(|sema| sema.resolve_method_call(&call))
-                    .is_some();
+            let resolved_function = sema
+                .as_ref()
+                .and_then(|sema| sema.resolve_method_call(&call));
+            let dynamic_trait = sema
+                .as_ref()
+                .and_then(|sema| {
+                    call.receiver()
+                        .and_then(|receiver| sema.type_of_expr(&receiver))
+                })
+                .is_some_and(|type_info| type_info.adjusted().as_dyn_trait().is_some());
             let candidates = graph
                 .unique_named(&target_name, Some("method"))
                 .collect::<Vec<_>>();
-            let signature = function_signature(&function);
-            if candidates.len() == 1 {
+            let exact_target =
+                semantics
+                    .zip(resolved_function)
+                    .and_then(|(workspace, function)| {
+                        let database = &workspace.database;
+                        let target_function = if dynamic_trait {
+                            function
+                                .as_assoc_item(database)
+                                .and_then(|item| item.container_or_implemented_trait(database))
+                                .and_then(|trait_| {
+                                    trait_.function(database, function.name(database))
+                                })
+                                .unwrap_or(function)
+                        } else {
+                            function
+                        };
+                        let stable_id = stable_for_hir_function(workspace, target_function)?;
+                        graph
+                            .nodes
+                            .contains_key(&stable_id)
+                            .then_some((stable_id, target_function))
+                    });
+            if let Some((target, resolved_function)) = exact_target {
+                let workspace = semantics.expect("exact target requires semantics");
+                let container = resolved_function
+                    .as_assoc_item(&workspace.database)
+                    .map(|item| item.container(&workspace.database));
+                let (dispatch, runtime_implementation_inferred) = if dynamic_trait {
+                    ("dynamic_trait", false)
+                } else if matches!(container, Some(AssocItemContainer::Impl(_))) {
+                    ("static", true)
+                } else {
+                    ("trait", false)
+                };
+                graph.bindings_resolved += 1;
+                graph.add_edge(
+                    &source_id,
+                    &target,
+                    "CALLS",
+                    Confidence::CompilerResolved,
+                    unit,
+                    call.syntax(),
+                    json!({
+                        "dispatch":dispatch,
+                        "runtime_implementation_inferred":runtime_implementation_inferred,
+                    }),
+                );
+            } else if resolved_function.is_some() {
+                graph.bindings_unresolved += 1;
+                graph.diagnostics.push(symbol_diagnostic(
+                    unit,
+                    call.syntax(),
+                    "resolved_method_not_indexed",
+                    &target_name,
+                    "rust-analyzer resolved the method, but its exact HIR identifier has no Graphine node in this registered project",
+                ));
+            } else if candidates.len() == 1 {
                 graph.add_resolved_edge(
                     &source_id,
                     &candidates[0],
                     "CALLS",
-                    resolved_semantically,
+                    false,
                     unit,
                     call.syntax(),
-                );
-            } else if resolved_semantically
-                && let Some(concrete_method) = candidates.iter().find(|candidate| {
-                    graph
-                        .nodes
-                        .get(*candidate)
-                        .and_then(|node| node.metadata.get("owner"))
-                        .and_then(Value::as_str)
-                        .and_then(|owner| graph.nodes.get(owner))
-                        .filter(|owner| owner.kind == "type")
-                        .and_then(|owner| owner.simple_name.as_deref())
-                        .is_some_and(|type_name| signature.contains(type_name))
-                })
-            {
-                graph.bindings_resolved += 1;
-                graph.add_edge(
-                    &source_id,
-                    concrete_method,
-                    "CALLS",
-                    Confidence::CompilerResolved,
-                    unit,
-                    call.syntax(),
-                    json!({
-                        "dispatch":"static",
-                        "runtime_implementation_inferred":true,
-                    }),
-                );
-            } else if resolved_semantically
-                && let Some(trait_method) = candidates.iter().find(|candidate| {
-                    graph
-                        .nodes
-                        .get(*candidate)
-                        .and_then(|node| node.metadata.get("owner"))
-                        .and_then(Value::as_str)
-                        .and_then(|owner| graph.nodes.get(owner))
-                        .is_some_and(|owner| owner.kind == "trait")
-                })
-            {
-                graph.bindings_resolved += 1;
-                graph.add_edge(
-                    &source_id,
-                    trait_method,
-                    "CALLS",
-                    Confidence::CompilerResolved,
-                    unit,
-                    call.syntax(),
-                    json!({
-                        "dispatch": if signature.contains("dyn ") {
-                            "dynamic_trait"
-                        } else {
-                            "trait"
-                        },
-                        "runtime_implementation_inferred":false,
-                    }),
                 );
             } else {
                 graph.bindings_unresolved += 1;
@@ -1207,14 +1530,32 @@ fn collect_relationships(
             .filter(|record| belongs_to_function(record.syntax(), &function))
         {
             let record_path = record.path();
-            let resolved_semantically = semantic
-                && record_path
+            let resolution = record_path
+                .as_ref()
+                .and_then(|path| sema.as_ref().and_then(|sema| sema.resolve_path(path)));
+            if let Some((type_id, "type")) = exact_path_target(graph, semantics, resolution) {
+                graph.add_resolved_edge(
+                    &source_id,
+                    &type_id,
+                    "CONSTRUCTS",
+                    true,
+                    unit,
+                    record.syntax(),
+                );
+            } else if resolution.is_some() {
+                let name = record_path
                     .as_ref()
-                    .and_then(|path| sema.as_ref().and_then(|sema| sema.resolve_path(path)))
-                    .is_some_and(|resolution| {
-                        matches!(resolution, PathResolution::Def(ModuleDef::Adt(_)))
-                    });
-            if let Some(type_name) =
+                    .and_then(|path| final_name(&path.syntax().to_string()))
+                    .unwrap_or_else(|| "record".to_owned());
+                graph.bindings_unresolved += 1;
+                graph.diagnostics.push(symbol_diagnostic(
+                    unit,
+                    record.syntax(),
+                    "resolved_type_not_indexed",
+                    &name,
+                    "rust-analyzer resolved the record type, but its exact HIR identifier has no Graphine node",
+                ));
+            } else if let Some(type_name) =
                 record_path.and_then(|path| final_name(&path.syntax().to_string()))
                 && let Some(type_id) = graph.first_named(&type_name, Some("type"))
             {
@@ -1222,7 +1563,7 @@ fn collect_relationships(
                     &source_id,
                     &type_id,
                     "CONSTRUCTS",
-                    resolved_semantically,
+                    false,
                     unit,
                     record.syntax(),
                 );
@@ -1243,12 +1584,40 @@ fn collect_relationships(
             let expansion = sema
                 .as_ref()
                 .and_then(|sema| sema.expand_macro_call(&macro_call));
-            if let Some(macro_id) = graph.first_named(&macro_name, Some("macro")) {
+            let resolved_macro = sema
+                .as_ref()
+                .and_then(|sema| sema.resolve_macro_call(&macro_call));
+            let exact_macro = semantics
+                .zip(resolved_macro)
+                .and_then(|(workspace, macro_)| {
+                    let (stable_id, _) =
+                        stable_for_hir_module_def(workspace, ModuleDef::Macro(macro_))?;
+                    graph.nodes.contains_key(&stable_id).then_some(stable_id)
+                });
+            if let Some(macro_id) = exact_macro {
                 graph.add_resolved_edge(
                     &source_id,
                     &macro_id,
                     "INVOKES_MACRO",
-                    expansion.is_some(),
+                    true,
+                    unit,
+                    macro_call.syntax(),
+                );
+            } else if resolved_macro.is_some() {
+                graph.bindings_unresolved += 1;
+                graph.diagnostics.push(symbol_diagnostic(
+                    unit,
+                    macro_call.syntax(),
+                    "resolved_macro_not_indexed",
+                    &macro_name,
+                    "rust-analyzer resolved the macro, but its exact HIR identifier has no Graphine node",
+                ));
+            } else if let Some(macro_id) = graph.first_named(&macro_name, Some("macro")) {
+                graph.add_resolved_edge(
+                    &source_id,
+                    &macro_id,
+                    "INVOKES_MACRO",
+                    false,
                     unit,
                     macro_call.syntax(),
                 );
@@ -1271,30 +1640,41 @@ fn collect_relationships(
                     let Some(target_name) = final_name(&path.syntax().to_string()) else {
                         continue;
                     };
-                    let resolved = sema.resolve_path(&path).is_some_and(|resolution| {
-                        matches!(resolution, PathResolution::Def(ModuleDef::Function(_)))
-                    });
-                    let Some(target) = graph.first_named(&target_name, Some("function")) else {
-                        continue;
-                    };
-                    if resolved {
+                    let resolution = sema.resolve_path(&path);
+                    if let Some((target, "function" | "method")) =
+                        exact_path_target(graph, semantics, resolution)
+                    {
                         graph.bindings_resolved += 1;
-                    } else {
+                        graph.add_edge(
+                            &source_id,
+                            &target,
+                            "CALLS",
+                            Confidence::CompilerResolved,
+                            unit,
+                            macro_call.syntax(),
+                            json!({"inside_macro":macro_name}),
+                        );
+                    } else if resolution.is_some() {
                         graph.bindings_unresolved += 1;
+                        graph.diagnostics.push(symbol_diagnostic(
+                            unit,
+                            macro_call.syntax(),
+                            "resolved_macro_call_target_not_indexed",
+                            &target_name,
+                            "macro expansion resolved to a HIR function without a Graphine node",
+                        ));
+                    } else if let Some(target) = graph.first_named(&target_name, Some("function")) {
+                        graph.bindings_unresolved += 1;
+                        graph.add_edge(
+                            &source_id,
+                            &target,
+                            "CALLS",
+                            Confidence::StaticInferred,
+                            unit,
+                            macro_call.syntax(),
+                            json!({"inside_macro":macro_name}),
+                        );
                     }
-                    graph.add_edge(
-                        &source_id,
-                        &target,
-                        "CALLS",
-                        if resolved {
-                            Confidence::CompilerResolved
-                        } else {
-                            Confidence::StaticInferred
-                        },
-                        unit,
-                        macro_call.syntax(),
-                        json!({"inside_macro":macro_name}),
-                    );
                 }
             }
         }
@@ -1311,11 +1691,22 @@ fn collect_relationships(
                 let candidates = graph
                     .unique_named(&field_name, Some("field"))
                     .collect::<Vec<_>>();
-                if candidates.len() == 1 {
-                    let resolved_semantically = sema
+                let resolved_field = sema
+                    .as_ref()
+                    .and_then(|sema| sema.resolve_field(&field))
+                    .and_then(|field| field.left());
+                let exact_field = semantics
+                    .zip(resolved_field)
+                    .and_then(|(workspace, field)| {
+                        let stable_id = stable_for_hir_field(workspace, field)?;
+                        graph.nodes.contains_key(&stable_id).then_some(stable_id)
+                    });
+                if exact_field.is_some() || (resolved_field.is_none() && candidates.len() == 1) {
+                    let target = exact_field
                         .as_ref()
-                        .and_then(|sema| sema.resolve_field(&field))
-                        .is_some();
+                        .or_else(|| candidates.first())
+                        .expect("a field target was checked above");
+                    let compiler_resolved = exact_field.is_some();
                     let assignment =
                         field
                             .syntax()
@@ -1332,9 +1723,9 @@ fn collect_relationships(
                     let write = assignment.is_some();
                     graph.add_resolved_edge(
                         &source_id,
-                        &candidates[0],
+                        target,
                         if write { "WRITES_FIELD" } else { "READS_FIELD" },
-                        resolved_semantically,
+                        compiler_resolved,
                         unit,
                         field.syntax(),
                     );
@@ -1346,13 +1737,22 @@ fn collect_relationships(
                     }) {
                         graph.add_resolved_edge(
                             &source_id,
-                            &candidates[0],
+                            target,
                             "READS_FIELD",
-                            resolved_semantically,
+                            compiler_resolved,
                             unit,
                             field.syntax(),
                         );
                     }
+                } else if resolved_field.is_some() {
+                    graph.bindings_unresolved += 1;
+                    graph.diagnostics.push(symbol_diagnostic(
+                        unit,
+                        field.syntax(),
+                        "resolved_field_not_indexed",
+                        &field_name,
+                        "rust-analyzer resolved the field, but its exact HIR identifier has no Graphine node",
+                    ));
                 }
             }
         }
@@ -1362,7 +1762,7 @@ fn collect_relationships(
         .syntax()
         .descendants()
         .filter_map(ast::Use::cast)
-        .filter(|item| cfg_enabled(item.syntax(), request))
+        .filter(|item| cfg_enabled(item.syntax(), unit, semantics))
     {
         let Some(tree) = use_item.use_tree() else {
             continue;
@@ -1375,21 +1775,30 @@ fn collect_relationships(
             .chain(tree.syntax().descendants().filter_map(ast::UseTree::cast))
         {
             let imported_path = imported.path();
-            let resolved_semantically = semantic
-                && imported_path
-                    .as_ref()
-                    .and_then(|path| sema.as_ref().and_then(|sema| sema.resolve_path(path)))
-                    .is_some();
+            let resolution = imported_path
+                .as_ref()
+                .and_then(|path| sema.as_ref().and_then(|sema| sema.resolve_path(path)));
             let Some(name) = imported_path.and_then(|path| final_name(&path.syntax().to_string()))
             else {
                 continue;
             };
-            if let Some(target) = graph.first_named(&name, None) {
+            if let Some((target, _)) = exact_path_target(graph, semantics, resolution) {
+                graph.add_resolved_edge(&source, &target, "IMPORTS", true, unit, imported.syntax());
+            } else if resolution.is_some() {
+                graph.bindings_unresolved += 1;
+                graph.diagnostics.push(symbol_diagnostic(
+                    unit,
+                    imported.syntax(),
+                    "resolved_import_not_indexed",
+                    &name,
+                    "rust-analyzer resolved the import, but its exact HIR identifier has no Graphine node",
+                ));
+            } else if let Some(target) = graph.first_named(&name, None) {
                 graph.add_resolved_edge(
                     &source,
                     &target,
                     "IMPORTS",
-                    resolved_semantically,
+                    false,
                     unit,
                     imported.syntax(),
                 );
@@ -1459,13 +1868,14 @@ fn add_named_type<N: AstNode + HasName>(
     node: &N,
     kind: &str,
     root_module: &str,
-    semantic: bool,
+    exact_stable_id: Option<String>,
 ) {
     let Some(name) = node.name().map(|name| name.text().to_string()) else {
         return;
     };
     let namespace = namespace_for(unit, node.syntax());
-    let stable_id = stable_for(kind, unit, &namespace, &name);
+    let semantic = exact_stable_id.is_some();
+    let stable_id = exact_stable_id.unwrap_or_else(|| stable_for(kind, unit, &namespace, &name));
     add_definition_node(
         graph,
         unit,
@@ -1498,11 +1908,12 @@ fn collect_fields(
     unit: &SourceUnit,
     owner: &ast::Struct,
     fields: &ast::FieldList,
-    semantic: bool,
+    semantics: Option<&SemanticWorkspace>,
+    sema: Option<&Semantics<'_, RootDatabase>>,
 ) {
     if let ast::FieldList::RecordFieldList(fields) = fields {
         for field in fields.fields() {
-            add_field(graph, unit, owner, &field, semantic);
+            add_field(graph, unit, owner, &field, semantics, sema);
         }
     }
 }
@@ -1512,7 +1923,8 @@ fn add_field<N: AstNode + HasName>(
     unit: &SourceUnit,
     owner: &N,
     field: &ast::RecordField,
-    semantic: bool,
+    semantics: Option<&SemanticWorkspace>,
+    sema: Option<&Semantics<'_, RootDatabase>>,
 ) {
     let (Some(owner_name), Some(field_name)) = (
         owner.name().map(|name| name.text().to_string()),
@@ -1522,11 +1934,19 @@ fn add_field<N: AstNode + HasName>(
     };
     let namespace = namespace_for(unit, owner.syntax());
     let owner_id = stable_for("type", unit, &namespace, &owner_name);
-    let stable_id = format!(
+    let inferred_stable_id = format!(
         "field:{}#{}",
         owner_id.strip_prefix("type:").unwrap_or(&owner_id),
         field_name
     );
+    let exact_stable_id = sema
+        .and_then(|sema| sema.to_def(field))
+        .and_then(|definition| {
+            semantics.and_then(|workspace| stable_for_hir_field(workspace, definition))
+        })
+        .filter(|id| stable_id_belongs_to_unit(id, unit));
+    let semantic = exact_stable_id.is_some();
+    let stable_id = exact_stable_id.unwrap_or(inferred_stable_id);
     add_definition_node(
         graph,
         unit,
@@ -1992,6 +2412,233 @@ fn stable_for(kind: &str, unit: &SourceUnit, namespace: &str, name: &str) -> Str
     format!("{kind}:{}::{namespace}::{name}", unit.target.crate_key)
 }
 
+fn stable_id_belongs_to_unit(stable_id: &str, unit: &SourceUnit) -> bool {
+    stable_id.contains(&format!("{}::", unit.target.crate_key))
+}
+
+fn hir_module_path(module: Module, database: &RootDatabase) -> String {
+    let mut segments = module
+        .path_to_root(database)
+        .into_iter()
+        .filter_map(|module| module.name(database))
+        .map(|name| name.as_str().to_owned())
+        .collect::<Vec<_>>();
+    segments.reverse();
+    if segments.is_empty() {
+        "crate".to_owned()
+    } else {
+        segments.join("::")
+    }
+}
+
+fn hir_named_stable_id(
+    workspace: &SemanticWorkspace,
+    kind: &str,
+    module: Module,
+    name: &str,
+) -> Option<String> {
+    let target = workspace
+        .crate_targets
+        .get(&module.krate(&workspace.database))?;
+    Some(format!(
+        "{kind}:{}::{}::{name}",
+        target.crate_key,
+        hir_module_path(module, &workspace.database)
+    ))
+}
+
+fn stable_for_hir_adt(workspace: &SemanticWorkspace, adt: Adt) -> Option<String> {
+    hir_named_stable_id(
+        workspace,
+        "type",
+        adt.module(&workspace.database),
+        adt.name(&workspace.database).as_str(),
+    )
+}
+
+fn stable_for_hir_trait(workspace: &SemanticWorkspace, trait_: Trait) -> Option<String> {
+    hir_named_stable_id(
+        workspace,
+        "trait",
+        trait_.module(&workspace.database),
+        trait_.name(&workspace.database).as_str(),
+    )
+}
+
+fn stable_for_hir_function(workspace: &SemanticWorkspace, function: Function) -> Option<String> {
+    hir_callable_identity(workspace, function).map(|(_, stable_id, _, _)| stable_id)
+}
+
+fn hir_function_belongs_to_unit(
+    function: Function,
+    unit: &SourceUnit,
+    workspace: Option<&SemanticWorkspace>,
+) -> bool {
+    let (Some(workspace), Some(unit_module)) = (workspace, unit.hir_module) else {
+        return false;
+    };
+    function
+        .module(&workspace.database)
+        .krate(&workspace.database)
+        == unit_module.krate(&workspace.database)
+}
+
+fn hir_callable_identity(
+    workspace: &SemanticWorkspace,
+    function: Function,
+) -> Option<(String, String, Option<String>, Option<String>)> {
+    let database = &workspace.database;
+    let name = function.name(database).as_str().to_owned();
+    if let Some(item) = function.as_assoc_item(database) {
+        let (owner_body, owner, implemented_trait) = match item.container(database) {
+            AssocItemContainer::Trait(trait_) => {
+                let trait_id = stable_for_hir_trait(workspace, trait_)?;
+                (
+                    trait_id.strip_prefix("trait:")?.to_owned(),
+                    Some(trait_id),
+                    None,
+                )
+            }
+            AssocItemContainer::Impl(implementation) => {
+                let owner_id =
+                    stable_for_hir_adt(workspace, implementation.self_ty(database).as_adt()?)?;
+                let owner_body = owner_id.strip_prefix("type:")?;
+                if let Some(trait_) = implementation.trait_(database) {
+                    let trait_id = stable_for_hir_trait(workspace, trait_)?;
+                    (
+                        format!("{owner_body} as {}", trait_id.strip_prefix("trait:")?),
+                        Some(owner_id),
+                        Some(trait_id),
+                    )
+                } else {
+                    (owner_body.to_owned(), Some(owner_id), None)
+                }
+            }
+        };
+        return Some((
+            "method".to_owned(),
+            format!("method:{owner_body}#{name}()"),
+            owner,
+            implemented_trait,
+        ));
+    }
+    Some((
+        "function".to_owned(),
+        hir_named_stable_id(
+            workspace,
+            "function",
+            function.module(database),
+            &format!("{name}()"),
+        )?,
+        None,
+        None,
+    ))
+}
+
+fn stable_for_hir_field(workspace: &SemanticWorkspace, field: ra_ap_hir::Field) -> Option<String> {
+    let database = &workspace.database;
+    let parent = field.parent_def(database);
+    if matches!(parent, Variant::EnumVariant(_)) {
+        return None;
+    }
+    let owner = stable_for_hir_adt(workspace, parent.adt(database))?;
+    Some(format!(
+        "field:{}#{}",
+        owner.strip_prefix("type:")?,
+        field.name(database).as_str()
+    ))
+}
+
+fn stable_for_hir_module_def(
+    workspace: &SemanticWorkspace,
+    definition: ModuleDef,
+) -> Option<(String, &'static str)> {
+    let database = &workspace.database;
+    match definition {
+        ModuleDef::Module(module) => {
+            let target = workspace.crate_targets.get(&module.krate(database))?;
+            Some((
+                module_id(&target.crate_key, &hir_module_path(module, database)),
+                "module",
+            ))
+        }
+        ModuleDef::Function(function) => {
+            let stable_id = stable_for_hir_function(workspace, function)?;
+            let kind = if stable_id.starts_with("method:") {
+                "method"
+            } else {
+                "function"
+            };
+            Some((stable_id, kind))
+        }
+        ModuleDef::Adt(adt) => Some((stable_for_hir_adt(workspace, adt)?, "type")),
+        ModuleDef::EnumVariant(variant) => {
+            let owner = stable_for_hir_adt(workspace, variant.parent_enum(database).into())?;
+            Some((
+                format!(
+                    "variant:{}::{}",
+                    owner.strip_prefix("type:")?,
+                    variant.name(database).as_str()
+                ),
+                "variant",
+            ))
+        }
+        ModuleDef::Trait(trait_) => Some((stable_for_hir_trait(workspace, trait_)?, "trait")),
+        ModuleDef::Const(constant) => Some((
+            hir_named_stable_id(
+                workspace,
+                "const",
+                constant.module(database),
+                constant.name(database)?.as_str(),
+            )?,
+            "const",
+        )),
+        ModuleDef::Static(static_) => Some((
+            hir_named_stable_id(
+                workspace,
+                "static",
+                static_.module(database),
+                static_.name(database).as_str(),
+            )?,
+            "static",
+        )),
+        ModuleDef::TypeAlias(alias) => Some((
+            hir_named_stable_id(
+                workspace,
+                "type",
+                alias.module(database),
+                alias.name(database).as_str(),
+            )?,
+            "type",
+        )),
+        ModuleDef::Macro(macro_) => Some((
+            hir_named_stable_id(
+                workspace,
+                "macro",
+                macro_.module(database),
+                macro_.name(database).as_str(),
+            )?,
+            "macro",
+        )),
+        ModuleDef::BuiltinType(_) => None,
+    }
+}
+
+fn exact_path_target(
+    graph: &GraphBuilder,
+    workspace: Option<&SemanticWorkspace>,
+    resolution: Option<PathResolution>,
+) -> Option<(String, &'static str)> {
+    let (stable_id, kind) = match resolution? {
+        PathResolution::Def(definition) => stable_for_hir_module_def(workspace?, definition)?,
+        _ => return None,
+    };
+    graph
+        .nodes
+        .contains_key(&stable_id)
+        .then_some((stable_id, kind))
+}
+
 fn module_id(crate_key: &str, namespace: &str) -> String {
     format!("module:{crate_key}::{namespace}")
 }
@@ -2070,53 +2717,119 @@ fn strip_generics(value: &str) -> String {
         .collect()
 }
 
-fn has_excluded_cfg_items(units: &[SourceUnit], request: &AnalyzeProjectRequest) -> bool {
-    units.iter().any(|unit| {
-        SourceFile::parse(&unit.text, Edition::CURRENT)
-            .tree()
-            .syntax()
-            .descendants()
-            .filter_map(ast::Item::cast)
-            .any(|item| !cfg_enabled(item.syntax(), request))
-    })
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CfgState {
+    Active,
+    Inactive,
+    Unknown,
 }
 
-fn cfg_enabled(syntax: &ra_ap_syntax::SyntaxNode, request: &AnalyzeProjectRequest) -> bool {
-    syntax
+struct CfgAudit {
+    excluded: bool,
+    diagnostics: Vec<AnalyzerDiagnostic>,
+}
+
+fn audit_cfg_items(units: &[SourceUnit], semantics: Option<&SemanticWorkspace>) -> CfgAudit {
+    let mut excluded = false;
+    let mut diagnostics = Vec::new();
+    let mut reported = BTreeSet::new();
+    for unit in units {
+        let (file, _) = parse_unit(unit, semantics);
+        for item in file.syntax().descendants().filter_map(ast::Item::cast) {
+            match cfg_state(item.syntax(), unit, semantics) {
+                CfgState::Active => {}
+                CfgState::Inactive => excluded = true,
+                CfgState::Unknown => {
+                    let range = line_range(&unit.text, item.syntax());
+                    if reported.insert((unit.relative_path.clone(), range)) {
+                        diagnostics.push(symbol_diagnostic(
+                            unit,
+                            item.syntax(),
+                            "cfg_configuration_unknown",
+                            "cfg",
+                            "rust-analyzer could not determine whether this cfg/cfg_attr expression is active; the item was excluded conservatively",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    CfgAudit {
+        excluded,
+        diagnostics,
+    }
+}
+
+fn cfg_enabled(
+    syntax: &ra_ap_syntax::SyntaxNode,
+    unit: &SourceUnit,
+    semantics: Option<&SemanticWorkspace>,
+) -> bool {
+    cfg_state(syntax, unit, semantics) == CfgState::Active
+}
+
+fn cfg_state(
+    syntax: &ra_ap_syntax::SyntaxNode,
+    unit: &SourceUnit,
+    semantics: Option<&SemanticWorkspace>,
+) -> CfgState {
+    let attributes = syntax
         .ancestors()
         .filter_map(ast::Item::cast)
         .flat_map(|item| item.attrs())
-        .all(|attribute| {
-            cfg_attribute_enabled(&attribute.syntax().to_string(), request).unwrap_or(true)
+        .filter_map(|attribute| attribute.meta())
+        .collect::<Vec<_>>();
+    if attributes
+        .iter()
+        .all(|meta| !matches!(meta, ast::Meta::CfgMeta(_) | ast::Meta::CfgAttrMeta(_)))
+    {
+        return CfgState::Active;
+    }
+    let Some((workspace, module)) = semantics.zip(unit.hir_module) else {
+        return CfgState::Unknown;
+    };
+    let options = module.krate(&workspace.database).cfg(&workspace.database);
+    attributes
+        .into_iter()
+        .fold(CfgState::Active, |state, meta| {
+            combine_cfg_state(state, cfg_meta_state(&meta, options))
         })
 }
 
-fn cfg_attribute_enabled(text: &str, request: &AnalyzeProjectRequest) -> Option<bool> {
-    let compact = text
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>();
-    if !compact.starts_with("#[cfg(") {
-        return None;
+fn cfg_meta_state(meta: &ast::Meta, options: &ra_ap_cfg::CfgOptions) -> CfgState {
+    match meta {
+        ast::Meta::CfgMeta(cfg) => cfg
+            .cfg_predicate()
+            .map(CfgExpr::parse_from_ast)
+            .and_then(|expression| options.check(&expression))
+            .map_or(CfgState::Unknown, |active| {
+                if active {
+                    CfgState::Active
+                } else {
+                    CfgState::Inactive
+                }
+            }),
+        ast::Meta::CfgAttrMeta(cfg_attr) => match cfg_attr
+            .cfg_predicate()
+            .map(CfgExpr::parse_from_ast)
+            .and_then(|expression| options.check(&expression))
+        {
+            Some(false) => CfgState::Active,
+            Some(true) => cfg_attr.metas().fold(CfgState::Active, |state, inner| {
+                combine_cfg_state(state, cfg_meta_state(&inner, options))
+            }),
+            None => CfgState::Unknown,
+        },
+        _ => CfgState::Active,
     }
-    if compact.starts_with("#[cfg(test") {
-        return Some(request.options.include_tests);
+}
+
+fn combine_cfg_state(left: CfgState, right: CfgState) -> CfgState {
+    match (left, right) {
+        (CfgState::Inactive, _) | (_, CfgState::Inactive) => CfgState::Inactive,
+        (CfgState::Unknown, _) | (_, CfgState::Unknown) => CfgState::Unknown,
+        (CfgState::Active, CfgState::Active) => CfgState::Active,
     }
-    let marker = "feature=\"";
-    let feature_start = compact.find(marker)? + marker.len();
-    let feature_end = compact[feature_start..].find('"')? + feature_start;
-    let feature = &compact[feature_start..feature_end];
-    let selected = request.cargo.all_features
-        || request
-            .cargo
-            .features
-            .iter()
-            .any(|selected| selected == feature);
-    Some(if compact.starts_with("#[cfg(not(") {
-        !selected
-    } else {
-        selected
-    })
 }
 
 fn belongs_to_function(syntax: &ra_ap_syntax::SyntaxNode, function: &ast::Fn) -> bool {
@@ -2284,6 +2997,74 @@ mod tests {
         }
     }
 
+    fn semantic_identity_fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "graphine-rust-identities-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(root.join("app/src")).unwrap();
+        fs::create_dir_all(root.join("external/src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"app\",\"external\"]\nresolver=\"3\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.lock"),
+            "# This file is automatically @generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"external\",\n]\n\n[[package]]\nname = \"external\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("app/Cargo.toml"),
+            "[package]\nname=\"app\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[dependencies]\nexternal={path=\"../external\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("external/Cargo.toml"),
+            "[package]\nname=\"external\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("external/src/lib.rs"),
+            "pub fn shared() -> u32 { 2 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("app/src/common.rs"),
+            "pub fn common_target() -> u32 { 3 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("app/src/lib.rs"),
+            r#"pub mod common;
+pub fn shared() -> u32 { 1 }
+pub struct Alpha;
+pub struct Beta;
+impl Alpha { pub fn same(&self) -> u32 { 10 } }
+impl Beta { pub fn same(&self) -> u32 { 20 } }
+pub fn run(alpha: &Alpha, beta: &Beta) -> u32 {
+    shared() + external::shared() + alpha.same() + beta.same() + common::common_target()
+}
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub fn known_platform() {}
+#[cfg(all(target_os = "graphine-never", any(unix, windows)))]
+pub fn complex_inactive() {}
+#[cfg_attr(any(unix, windows), cfg(all(target_os = "graphine-never", unix)))]
+pub fn cfg_attr_inactive() {}
+#[cfg(graphine_unknown_operator(unix))]
+pub fn uncertain_cfg() {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("app/src/main.rs"),
+            "mod common;\nfn main() { let _ = common::common_target(); }\n",
+        )
+        .unwrap();
+        root
+    }
+
     #[test]
     fn safe_mode_does_not_execute_build_scripts_and_feature_changes_fingerprint() {
         let (root, build_sentinel, proc_sentinel) = fixture();
@@ -2352,6 +3133,140 @@ mod tests {
                 "cargo_metadata_unavailable" | "semantic_workspace_unavailable"
             )
         }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compiler_resolved_edges_use_exact_hir_identity_for_duplicate_names() {
+        let root = semantic_identity_fixture();
+        let output = analyze(&request(root.clone(), AnalyzerMode::Safe), "test").unwrap();
+        let source = "function:crate:app/lib/app::crate::run()";
+        let expected_targets = [
+            "function:crate:app/lib/app::crate::shared()",
+            "function:crate:external/lib/external::crate::shared()",
+            "method:crate:app/lib/app::crate::Alpha#same()",
+            "method:crate:app/lib/app::crate::Beta#same()",
+        ];
+        for target in expected_targets {
+            assert!(
+                output.edges.iter().any(|edge| {
+                    edge.source_stable_id == source
+                        && edge.target_stable_id == target
+                        && edge.kind == "CALLS"
+                        && edge.confidence == Confidence::CompilerResolved
+                }),
+                "missing exact compiler-resolved edge to {target}; external nodes={:?}; shared nodes={:?}; call edges={:?}; diagnostics={:?}",
+                output
+                    .nodes
+                    .iter()
+                    .filter(|node| node.stable_id.contains("external"))
+                    .map(|node| (&node.stable_id, node.confidence))
+                    .collect::<Vec<_>>(),
+                output
+                    .nodes
+                    .iter()
+                    .filter(|node| node.simple_name.as_deref() == Some("shared"))
+                    .map(|node| (&node.stable_id, node.confidence))
+                    .collect::<Vec<_>>(),
+                output
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.source_stable_id == source)
+                    .map(|edge| (&edge.target_stable_id, &edge.kind, edge.confidence))
+                    .collect::<Vec<_>>(),
+                output
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| (&diagnostic.kind, &diagnostic.symbol_text))
+                    .collect::<Vec<_>>()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crate_graph_assigns_shared_module_to_library_and_binary_targets() {
+        let root = semantic_identity_fixture();
+        let output = analyze(&request(root.clone(), AnalyzerMode::Safe), "test").unwrap();
+        for target in ["crate:app/lib/app", "crate:app/bin/app"] {
+            let stable_id = format!("function:{target}::common::common_target()");
+            assert!(
+                output.nodes.iter().any(|node| node.stable_id == stable_id),
+                "shared module was not indexed for {target}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_analyzer_cfg_handles_composites_cfg_attr_and_uncertainty() {
+        let root = semantic_identity_fixture();
+        let output = analyze(&request(root.clone(), AnalyzerMode::Safe), "test").unwrap();
+        assert!(
+            output
+                .nodes
+                .iter()
+                .any(|node| { node.simple_name.as_deref() == Some("known_platform") })
+        );
+        for excluded in ["complex_inactive", "cfg_attr_inactive", "uncertain_cfg"] {
+            assert!(
+                !output
+                    .nodes
+                    .iter()
+                    .any(|node| { node.simple_name.as_deref() == Some(excluded) })
+            );
+        }
+        assert!(output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == "cfg_configuration_unknown"
+                && diagnostic.symbol_text.as_deref() == Some("cfg")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trusted_cargo_timeout_terminates_long_running_build_script() {
+        let root = std::env::temp_dir().join(format!(
+            "graphine-rust-timeout-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let sentinel = root.join("late-build-script-output");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname=\"timeout-fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\nbuild=\"build.rs\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.lock"),
+            "# This file is automatically @generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"timeout-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn value() -> u32 { 1 }\n").unwrap();
+        fs::write(
+            root.join("build.rs"),
+            format!(
+                "fn main() {{ std::thread::sleep(std::time::Duration::from_secs(2)); std::fs::write(r#\"{}\"#, \"survived\").unwrap(); }}\n",
+                sentinel.display()
+            ),
+        )
+        .unwrap();
+        let mut timed = request(root.clone(), AnalyzerMode::Trusted);
+        timed.timeout_ms = 400;
+        let started = Instant::now();
+        let output = analyze(&timed, "test").unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.kind == "trusted_cargo_check_failed")
+        );
+        thread::sleep(Duration::from_millis(2_200));
+        assert!(
+            !sentinel.exists(),
+            "timed-out build script survived Cargo termination"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

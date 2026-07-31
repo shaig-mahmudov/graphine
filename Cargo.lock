@@ -681,6 +681,7 @@ dependencies = [
  "camino",
  "cargo_metadata",
  "graphine-protocol",
+ "ra_ap_cfg",
  "ra_ap_hir",
  "ra_ap_ide_db",
  "ra_ap_load-cargo",

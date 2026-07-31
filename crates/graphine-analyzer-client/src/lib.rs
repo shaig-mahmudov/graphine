@@ -1,8 +1,9 @@
 use graphine_index::{AnalysisIngestion, Database};
 use graphine_protocol::{
     ANALYZER_PROTOCOL_VERSION, AnalysisCompletionStatus, AnalyzeProjectRequest, AnalyzerDiagnostic,
-    AnalyzerEvent, AnalyzerHello, AnalyzerMode, AnalyzerOptions, AnalyzerSummary, GraphineConfig,
-    GraphineError, StableId, SyntheticEdge, SyntheticGraph, SyntheticNode,
+    AnalyzerEvent, AnalyzerHello, AnalyzerMode, AnalyzerOptions, AnalyzerSummary,
+    CargoAnalysisOptions, GraphineConfig, GraphineError, ProjectLanguage, StableId, SyntheticEdge,
+    SyntheticGraph, SyntheticNode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -35,9 +36,13 @@ pub struct AnalyzerClient {
     java_executable: PathBuf,
     worker_jar: PathBuf,
     maven_executable: PathBuf,
+    rust_worker: PathBuf,
+    cargo_executable: PathBuf,
+    rustc_executable: PathBuf,
     timeout: Duration,
     output_limit: usize,
-    discovery: AnalyzerJarDiscovery,
+    java_discovery: AnalyzerJarDiscovery,
+    rust_discovery: AnalyzerJarDiscovery,
     #[cfg(test)]
     command_override: Option<(PathBuf, Vec<OsString>)>,
 }
@@ -56,7 +61,9 @@ pub struct AnalysisOutcome {
     pub summary: AnalyzerSummary,
     pub diagnostics: usize,
     pub partial: bool,
+    pub analyzer_name: String,
     pub analyzer_version: String,
+    pub language: ProjectLanguage,
     pub worker_round_trip_ms: u64,
     pub ingestion_ms: u64,
 }
@@ -64,14 +71,19 @@ pub struct AnalysisOutcome {
 impl AnalyzerClient {
     #[must_use]
     pub fn from_config(config: &GraphineConfig) -> Self {
-        let discovery = discover_analyzer_jar(config);
+        let java_discovery = discover_analyzer_jar(config);
+        let rust_discovery = discover_rust_analyzer_worker(config);
         Self {
             java_executable: config.java_executable.clone(),
-            worker_jar: discovery.path.clone(),
+            worker_jar: java_discovery.path.clone(),
             maven_executable: config.maven_executable.clone(),
+            rust_worker: rust_discovery.path.clone(),
+            cargo_executable: config.cargo_executable.clone(),
+            rustc_executable: config.rustc_executable.clone(),
             timeout: Duration::from_millis(config.analyzer_timeout_ms),
             output_limit: config.analyzer_output_limit_bytes,
-            discovery,
+            java_discovery,
+            rust_discovery,
             #[cfg(test)]
             command_override: None,
         }
@@ -95,9 +107,26 @@ impl AnalyzerClient {
             java_executable,
             worker_jar,
             maven_executable,
+            rust_worker: PathBuf::from(if cfg!(windows) {
+                "graphine-rust-analyzer.exe"
+            } else {
+                "graphine-rust-analyzer"
+            }),
+            cargo_executable: PathBuf::from(if cfg!(windows) { "cargo.exe" } else { "cargo" }),
+            rustc_executable: PathBuf::from(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
             timeout,
             output_limit,
-            discovery,
+            java_discovery: discovery,
+            rust_discovery: AnalyzerJarDiscovery {
+                path: PathBuf::from(if cfg!(windows) {
+                    "graphine-rust-analyzer.exe"
+                } else {
+                    "graphine-rust-analyzer"
+                }),
+                source: "not_found".to_owned(),
+                searched: Vec::new(),
+                available: false,
+            },
             #[cfg(test)]
             command_override: None,
         }
@@ -105,7 +134,15 @@ impl AnalyzerClient {
 
     #[must_use]
     pub const fn discovery(&self) -> &AnalyzerJarDiscovery {
-        &self.discovery
+        &self.java_discovery
+    }
+
+    #[must_use]
+    pub const fn discovery_for(&self, language: ProjectLanguage) -> &AnalyzerJarDiscovery {
+        match language {
+            ProjectLanguage::Java => &self.java_discovery,
+            ProjectLanguage::Rust => &self.rust_discovery,
+        }
     }
 
     /// Runs the analyzer and atomically activates its validated graph.
@@ -121,17 +158,60 @@ impl AnalyzerClient {
         allow_partial: bool,
         cancellation: &CancellationToken,
     ) -> Result<AnalysisOutcome, GraphineError> {
+        self.analyze_and_ingest_with_options(
+            database,
+            project_ref,
+            mode,
+            allow_partial,
+            CargoAnalysisOptions::default(),
+            cancellation,
+        )
+    }
+
+    /// Runs the selected project analyzer with language-specific Cargo options.
+    ///
+    /// # Errors
+    ///
+    /// Returns worker, protocol, cancellation, partial-policy, path, or database errors.
+    pub fn analyze_and_ingest_with_options(
+        &self,
+        database: &mut Database,
+        project_ref: &str,
+        mode: AnalyzerMode,
+        allow_partial: bool,
+        cargo: CargoAnalysisOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<AnalysisOutcome, GraphineError> {
         let project = database.project_by_ref(project_ref)?;
+        if project.language == ProjectLanguage::Java
+            && (cargo.all_features
+                || cargo.no_default_features
+                || cargo.target.is_some()
+                || !cargo.features.is_empty())
+        {
+            return Err(GraphineError::InvalidArgument(
+                "Cargo feature and target options apply only to Rust projects".to_owned(),
+            ));
+        }
+        validate_cargo_options(&cargo)?;
         let request_id = format!("index-{}-{}", now_ms(), std::process::id());
         let request = AnalyzeProjectRequest {
             protocol_version: ANALYZER_PROTOCOL_VERSION,
             request_id: request_id.clone(),
             operation: "analyze_project".to_owned(),
-            project_root: java_compatible_path(&project.canonical_root),
+            language: project.language,
+            project_root: if project.language == ProjectLanguage::Java {
+                java_compatible_path(&project.canonical_root)
+            } else {
+                project.canonical_root.clone()
+            },
             mode,
             source_sets: vec!["main".to_owned(), "test".to_owned()],
             options: AnalyzerOptions::default(),
             maven_executable: resolve_executable(&self.maven_executable),
+            cargo_executable: resolve_executable(&self.cargo_executable),
+            rustc_executable: resolve_executable(&self.rustc_executable),
+            cargo,
             timeout_ms: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
         };
         let worker_started = Instant::now();
@@ -148,7 +228,9 @@ impl AnalyzerClient {
         };
         let ingestion = AnalysisIngestion {
             protocol_version: ANALYZER_PROTOCOL_VERSION,
+            analyzer_name: analysis.analyzer_name.clone(),
             analyzer_version: analysis.analyzer_version.clone(),
+            language: project.language,
             source_fingerprint: analysis.fingerprint,
             partial,
             summary: analysis.summary.clone(),
@@ -162,7 +244,9 @@ impl AnalyzerClient {
             summary: analysis.summary,
             diagnostics: analysis.diagnostics.len(),
             partial,
+            analyzer_name: analysis.analyzer_name,
             analyzer_version: analysis.analyzer_version,
+            language: project.language,
             worker_round_trip_ms,
             ingestion_ms,
         })
@@ -174,7 +258,16 @@ impl AnalyzerClient {
     ///
     /// Returns unavailable, timeout, or worker errors.
     pub fn version(&self) -> Result<String, GraphineError> {
-        self.inspect("--version")
+        self.version_for(ProjectLanguage::Java)
+    }
+
+    /// Returns the selected independently runnable worker version.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable, timeout, or worker errors.
+    pub fn version_for(&self, language: ProjectLanguage) -> Result<String, GraphineError> {
+        self.inspect(language, "--version")
     }
 
     /// Returns analyzer-reported protocol and packaged capability metadata.
@@ -185,12 +278,28 @@ impl AnalyzerClient {
     ///
     /// Returns unavailable, timeout, worker, or malformed-metadata errors.
     pub fn metadata(&self) -> Result<AnalyzerHello, GraphineError> {
-        let output = self.inspect("--metadata")?;
-        parse_analyzer_metadata(&output)
+        self.metadata_for(ProjectLanguage::Java)
     }
 
-    fn inspect(&self, argument: &str) -> Result<String, GraphineError> {
-        let mut command = self.command();
+    /// Returns metadata for one selected worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable, timeout, worker, or malformed-metadata errors.
+    pub fn metadata_for(&self, language: ProjectLanguage) -> Result<AnalyzerHello, GraphineError> {
+        let output = self.inspect(language, "--metadata")?;
+        let metadata = parse_analyzer_metadata(&output)?;
+        if metadata.language != language {
+            return Err(GraphineError::AnalyzerProtocol);
+        }
+        Ok(metadata)
+    }
+
+    fn inspect(&self, language: ProjectLanguage, argument: &str) -> Result<String, GraphineError> {
+        if !self.discovery_for(language).available {
+            return Err(GraphineError::AnalyzerUnavailable);
+        }
+        let mut command = self.command(language);
         let mut child = command
             .arg(argument)
             .stdout(Stdio::piped())
@@ -233,11 +342,11 @@ impl AnalyzerClient {
         request: &AnalyzeProjectRequest,
         cancellation: &CancellationToken,
     ) -> Result<RawAnalysis, GraphineError> {
-        if !self.worker_jar.is_file() {
+        if !self.discovery_for(request.language).available {
             return Err(GraphineError::AnalyzerUnavailable);
         }
         let mut child = self
-            .command()
+            .command(request.language)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -258,7 +367,7 @@ impl AnalyzerClient {
         let stdout_thread = thread::spawn(move || stream_lines(stdout, limit, &sender));
         let stderr_thread = thread::spawn(move || read_bounded(stderr, 64 * 1024));
         let deadline = Instant::now() + self.timeout;
-        let mut collector = EventCollector::new(request.request_id.clone());
+        let mut collector = EventCollector::new(request.request_id.clone(), request.language);
         let mut disconnected = false;
         loop {
             if cancellation.is_cancelled() {
@@ -312,17 +421,17 @@ impl AnalyzerClient {
         Ok(result)
     }
 
-    fn command(&self) -> Command {
+    fn command(&self, language: ProjectLanguage) -> Command {
         #[cfg(test)]
         let mut command = if let Some((program, arguments)) = &self.command_override {
             let mut override_command = Command::new(program);
             override_command.args(arguments);
             override_command
         } else {
-            self.java_command()
+            self.language_command(language)
         };
         #[cfg(not(test))]
-        let mut command = self.java_command();
+        let mut command = self.language_command(language);
         let inherited = std::env::vars().collect::<BTreeMap<_, _>>();
         command.env_clear();
         for allowed in [
@@ -338,6 +447,12 @@ impl AnalyzerClient {
             "ComSpec",
             "APPDATA",
             "LOCALAPPDATA",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "RUSTUP_TOOLCHAIN",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
         ] {
             if let Some((key, value)) = inherited
                 .iter()
@@ -347,6 +462,13 @@ impl AnalyzerClient {
             }
         }
         command
+    }
+
+    fn language_command(&self, language: ProjectLanguage) -> Command {
+        match language {
+            ProjectLanguage::Java => self.java_command(),
+            ProjectLanguage::Rust => Command::new(&self.rust_worker),
+        }
     }
 
     fn java_command(&self) -> Command {
@@ -359,7 +481,8 @@ impl AnalyzerClient {
 fn parse_analyzer_metadata(value: &str) -> Result<AnalyzerHello, GraphineError> {
     let metadata: AnalyzerHello =
         serde_json::from_str(value).map_err(|_| GraphineError::AnalyzerProtocol)?;
-    if metadata.analyzer_version.trim().is_empty()
+    if metadata.analyzer_name.trim().is_empty()
+        || metadata.analyzer_version.trim().is_empty()
         || metadata.capabilities.iter().any(|capability| {
             capability.trim().is_empty()
                 || capability.len() > 100
@@ -397,7 +520,7 @@ fn discover_analyzer_jar_from(
     development_root: Option<&Path>,
 ) -> AnalyzerJarDiscovery {
     let mut candidates: Vec<(PathBuf, &str)> = Vec::new();
-    if let Some(path) = &config.analyzer_jar {
+    if let Some(path) = &config.java_analyzer_jar {
         candidates.push((path.clone(), "config"));
     }
     if let Some(path) = environment {
@@ -439,6 +562,70 @@ fn discover_analyzer_jar_from(
     }
 }
 
+#[must_use]
+pub fn discover_rust_analyzer_worker(config: &GraphineConfig) -> AnalyzerJarDiscovery {
+    let executable = std::env::current_exe().ok();
+    let environment = std::env::var_os("GRAPHINE_RUST_ANALYZER").map(PathBuf::from);
+    let development = if cfg!(debug_assertions) {
+        find_development_root()
+    } else {
+        None
+    };
+    discover_rust_analyzer_worker_from(
+        config,
+        environment,
+        executable.as_deref(),
+        development.as_deref(),
+    )
+}
+
+fn discover_rust_analyzer_worker_from(
+    config: &GraphineConfig,
+    environment: Option<PathBuf>,
+    executable: Option<&Path>,
+    development_root: Option<&Path>,
+) -> AnalyzerJarDiscovery {
+    let file_name = if cfg!(windows) {
+        "graphine-rust-analyzer.exe"
+    } else {
+        "graphine-rust-analyzer"
+    };
+    let mut candidates: Vec<(PathBuf, &str)> = Vec::new();
+    if let Some(path) = &config.rust_analyzer_worker {
+        candidates.push((path.clone(), "config"));
+    }
+    if let Some(path) = environment {
+        candidates.push((path, "environment"));
+    }
+    if let Some(directory) = executable.and_then(Path::parent) {
+        candidates.push((directory.join("lib").join(file_name), "executable_lib"));
+        candidates.push((directory.join(file_name), "executable_sibling"));
+    }
+    if let Some(root) = development_root {
+        candidates.push((
+            root.join("target/debug").join(file_name),
+            "development_workspace",
+        ));
+    }
+    let searched: Vec<_> = candidates.iter().map(|(path, _)| path.clone()).collect();
+    if let Some((path, source)) = candidates.iter().find(|(path, _)| path.is_file()) {
+        return AnalyzerJarDiscovery {
+            path: path.clone(),
+            source: (*source).to_owned(),
+            searched,
+            available: true,
+        };
+    }
+    AnalyzerJarDiscovery {
+        path: candidates
+            .first()
+            .map_or_else(|| PathBuf::from(file_name), |(path, _)| path.clone()),
+        source: "not_found".to_owned(),
+        searched,
+        available: false,
+    }
+}
+
 fn find_development_root() -> Option<PathBuf> {
     let current = std::env::current_dir().ok()?;
     current.ancestors().find_map(|candidate| {
@@ -450,6 +637,7 @@ fn find_development_root() -> Option<PathBuf> {
 }
 
 struct RawAnalysis {
+    analyzer_name: String,
     analyzer_version: String,
     fingerprint: String,
     nodes: Vec<SyntheticNode>,
@@ -461,7 +649,9 @@ struct RawAnalysis {
 
 struct EventCollector {
     request_id: String,
-    started: bool,
+    language: ProjectLanguage,
+    phase: EventPhase,
+    analyzer_name: Option<String>,
     analyzer_version: Option<String>,
     fingerprint: Option<String>,
     nodes: BTreeMap<String, SyntheticNode>,
@@ -472,11 +662,25 @@ struct EventCollector {
     completion: Option<AnalysisCompletionStatus>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EventPhase {
+    AwaitingStart,
+    AwaitingMetadata,
+    Modules,
+    Nodes,
+    Edges,
+    Diagnostics,
+    AwaitingCompletion,
+    Complete,
+}
+
 impl EventCollector {
-    fn new(request_id: String) -> Self {
+    fn new(request_id: String, language: ProjectLanguage) -> Self {
         Self {
             request_id,
-            started: false,
+            language,
+            phase: EventPhase::AwaitingStart,
+            analyzer_name: None,
             analyzer_version: None,
             fingerprint: None,
             nodes: BTreeMap::new(),
@@ -498,36 +702,41 @@ impl EventCollector {
             AnalyzerEvent::AnalysisStarted {
                 protocol_version,
                 request_id,
+                analyzer_name,
+                language,
                 analyzer_version,
-            } => {
-                if self.started
-                    || protocol_version != ANALYZER_PROTOCOL_VERSION
-                    || request_id != self.request_id
-                {
-                    return Err(GraphineError::AnalyzerProtocol);
-                }
-                self.started = true;
-                self.analyzer_version = Some(analyzer_version);
-            }
-            AnalyzerEvent::ProjectMetadata { fingerprint, .. } if self.started => {
-                self.fingerprint = Some(fingerprint);
-            }
+            } => self.accept_started(
+                protocol_version,
+                &request_id,
+                analyzer_name,
+                language,
+                analyzer_version,
+            )?,
+            AnalyzerEvent::ProjectMetadata {
+                language,
+                fingerprint,
+                configuration,
+                ..
+            } => self.accept_metadata(language, fingerprint, &configuration)?,
             AnalyzerEvent::ModuleDiscovered {
                 root, source_roots, ..
-            } if self.started => {
+            } if self.phase == EventPhase::Modules => {
                 if (root != "." && !safe_relative(&root))
                     || source_roots.iter().any(|path| !safe_relative(path))
                 {
                     return Err(GraphineError::AnalyzerProtocol);
                 }
             }
-            AnalyzerEvent::Node { node } if self.started => {
+            AnalyzerEvent::Node { node }
+                if matches!(self.phase, EventPhase::Modules | EventPhase::Nodes) =>
+            {
                 StableId::parse(node.stable_id.clone())?;
                 if !node.metadata.is_object()
                     || self.nodes.insert(node.stable_id.clone(), node).is_some()
                 {
                     return Err(GraphineError::AnalyzerProtocol);
                 }
+                self.phase = EventPhase::Nodes;
             }
             AnalyzerEvent::Edge {
                 source,
@@ -537,7 +746,11 @@ impl EventCollector {
                 provenance,
                 metadata,
                 occurrences,
-            } if self.started => {
+            } if matches!(
+                self.phase,
+                EventPhase::Modules | EventPhase::Nodes | EventPhase::Edges
+            ) =>
+            {
                 if kind.is_empty()
                     || !metadata.is_object()
                     || !self
@@ -555,22 +768,101 @@ impl EventCollector {
                     metadata,
                     occurrences,
                 });
+                self.phase = EventPhase::Edges;
             }
-            AnalyzerEvent::Diagnostic { diagnostic } if self.started => {
+            AnalyzerEvent::Diagnostic { diagnostic }
+                if matches!(
+                    self.phase,
+                    EventPhase::Modules
+                        | EventPhase::Nodes
+                        | EventPhase::Edges
+                        | EventPhase::Diagnostics
+                ) =>
+            {
                 self.diagnostics.push(diagnostic);
+                self.phase = EventPhase::Diagnostics;
             }
-            AnalyzerEvent::AnalysisSummary { summary } if self.started => {
-                self.summary = Some(summary);
-            }
-            AnalyzerEvent::AnalysisCompleted { status } if self.started => {
-                self.completion = Some(status);
-            }
+            AnalyzerEvent::AnalysisSummary { summary } => self.accept_summary(summary)?,
+            AnalyzerEvent::AnalysisCompleted { status } => self.accept_completed(status)?,
             AnalyzerEvent::AnalysisFailed { code, message } => {
                 warn!(%code, %message, "analyzer reported failure");
                 return Err(GraphineError::AnalyzerFailed);
             }
             _ => return Err(GraphineError::AnalyzerProtocol),
         }
+        Ok(())
+    }
+
+    fn accept_started(
+        &mut self,
+        protocol_version: u32,
+        request_id: &str,
+        analyzer_name: String,
+        language: ProjectLanguage,
+        analyzer_version: String,
+    ) -> Result<(), GraphineError> {
+        let expected_name = match language {
+            ProjectLanguage::Java => "graphine-java-jdt",
+            ProjectLanguage::Rust => "graphine-rust-analyzer",
+        };
+        if self.phase != EventPhase::AwaitingStart
+            || protocol_version != ANALYZER_PROTOCOL_VERSION
+            || request_id != self.request_id
+            || language != self.language
+            || analyzer_name != expected_name
+        {
+            return Err(GraphineError::AnalyzerProtocol);
+        }
+        self.phase = EventPhase::AwaitingMetadata;
+        self.analyzer_name = Some(analyzer_name);
+        self.analyzer_version = Some(analyzer_version);
+        Ok(())
+    }
+
+    fn accept_metadata(
+        &mut self,
+        language: ProjectLanguage,
+        fingerprint: String,
+        configuration: &serde_json::Value,
+    ) -> Result<(), GraphineError> {
+        if self.phase != EventPhase::AwaitingMetadata
+            || language != self.language
+            || fingerprint.is_empty()
+            || !configuration.is_object()
+        {
+            return Err(GraphineError::AnalyzerProtocol);
+        }
+        self.fingerprint = Some(fingerprint);
+        self.phase = EventPhase::Modules;
+        Ok(())
+    }
+
+    fn accept_summary(&mut self, summary: AnalyzerSummary) -> Result<(), GraphineError> {
+        if !matches!(
+            self.phase,
+            EventPhase::Modules | EventPhase::Nodes | EventPhase::Edges | EventPhase::Diagnostics
+        ) || summary.language != self.language
+            || !summary.configuration.is_object()
+        {
+            return Err(GraphineError::AnalyzerProtocol);
+        }
+        self.summary = Some(summary);
+        self.phase = EventPhase::AwaitingCompletion;
+        Ok(())
+    }
+
+    fn accept_completed(&mut self, status: AnalysisCompletionStatus) -> Result<(), GraphineError> {
+        let expected = match status {
+            AnalysisCompletionStatus::Complete => "complete",
+            AnalysisCompletionStatus::Partial => "partial",
+        };
+        if self.phase != EventPhase::AwaitingCompletion
+            || self.summary.as_ref().map(|summary| summary.status.as_str()) != Some(expected)
+        {
+            return Err(GraphineError::AnalyzerProtocol);
+        }
+        self.completion = Some(status);
+        self.phase = EventPhase::Complete;
         Ok(())
     }
 
@@ -588,6 +880,7 @@ impl EventCollector {
             return Err(GraphineError::AnalyzerProtocol);
         }
         Ok(RawAnalysis {
+            analyzer_name: self.analyzer_name.ok_or(GraphineError::AnalyzerProtocol)?,
             analyzer_version: self
                 .analyzer_version
                 .ok_or(GraphineError::AnalyzerProtocol)?,
@@ -682,6 +975,30 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn validate_cargo_options(options: &CargoAnalysisOptions) -> Result<(), GraphineError> {
+    if options.all_features && (!options.features.is_empty() || options.no_default_features) {
+        return Err(GraphineError::InvalidArgument(
+            "--all-features conflicts with --features and --no-default-features".to_owned(),
+        ));
+    }
+    if options.features.len() > 256
+        || options.features.iter().any(|feature| {
+            feature.is_empty()
+                || feature.len() > 200
+                || feature.contains(['\0', '\n', '\r', ' ', ','])
+        })
+        || options
+            .target
+            .as_ref()
+            .is_some_and(|target| target.is_empty() || target.len() > 200)
+    {
+        return Err(GraphineError::InvalidArgument(
+            "invalid Cargo feature or target selection".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn java_compatible_path(path: &Path) -> PathBuf {
     let value = path.to_string_lossy();
     if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
@@ -716,10 +1033,14 @@ mod tests {
 
     #[test]
     fn protocol_rejects_malformed_version_duplicates_and_incomplete_streams() {
-        let mut collector = EventCollector::new("id".to_owned());
+        let mut collector = EventCollector::new("id".to_owned(), ProjectLanguage::Java);
         assert!(collector.accept("not json").is_err());
-        assert!(collector.accept(&json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_version":"x"}).to_string()).is_err());
-        assert!(EventCollector::new("id".to_owned()).finish().is_err());
+        assert!(collector.accept(&json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_name":"graphine-rust-analyzer","language":"rust","analyzer_version":"x"}).to_string()).is_err());
+        assert!(
+            EventCollector::new("id".to_owned(), ProjectLanguage::Java)
+                .finish()
+                .is_err()
+        );
     }
 
     #[test]
@@ -778,7 +1099,7 @@ mod tests {
     #[test]
     fn analyzer_metadata_preserves_reported_capabilities_and_protocol() {
         let metadata = parse_analyzer_metadata(
-            r#"{"protocol_version":1,"analyzer_version":"0.1.0","capabilities":["java_semantics","spring_static_semantics","maven_trusted_mode"]}"#,
+            r#"{"protocol_version":2,"analyzer_name":"graphine-java-jdt","analyzer_version":"0.1.0","language":"java","capabilities":["java_semantics","spring_static_semantics","maven_trusted_mode"]}"#,
         )
         .unwrap();
         assert_eq!(metadata.protocol_version, ANALYZER_PROTOCOL_VERSION);
@@ -789,7 +1110,7 @@ mod tests {
         );
 
         let mismatched = parse_analyzer_metadata(
-            r#"{"protocol_version":2,"analyzer_version":"old","capabilities":["java_semantics"]}"#,
+            r#"{"protocol_version":1,"analyzer_name":"graphine-java-jdt","analyzer_version":"old","language":"java","capabilities":["java_semantics"]}"#,
         )
         .unwrap();
         assert_ne!(mismatched.protocol_version, ANALYZER_PROTOCOL_VERSION);
@@ -800,7 +1121,7 @@ mod tests {
         assert!(parse_analyzer_metadata("not json").is_err());
         assert!(
             parse_analyzer_metadata(
-                r#"{"protocol_version":1,"analyzer_version":"0.1.0","capabilities":["java_semantics","java_semantics"]}"#,
+                r#"{"protocol_version":2,"analyzer_name":"graphine-java-jdt","analyzer_version":"0.1.0","language":"java","capabilities":["java_semantics","java_semantics"]}"#,
             )
             .is_err()
         );
@@ -808,10 +1129,25 @@ mod tests {
 
     #[test]
     fn analyzer_events_require_known_stable_ids() {
-        let mut collector = EventCollector::new("id".to_owned());
-        collector.accept(&json!({"type":"analysis_started","protocol_version":1,"request_id":"id","analyzer_version":"x"}).to_string()).unwrap();
+        let mut collector = EventCollector::new("id".to_owned(), ProjectLanguage::Java);
+        collector.accept(&json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_name":"graphine-java-jdt","language":"java","analyzer_version":"x"}).to_string()).unwrap();
+        collector.accept(&json!({"type":"project_metadata","language":"java","fingerprint":"abc","modules":[],"configuration":{}}).to_string()).unwrap();
         let invalid = json!({"type":"node","stable_id":"unknown:x","kind":"TYPE","qualified_name":"x","confidence":"COMPILER_RESOLVED","provenance":"test","metadata":{},"unresolved":[]});
         assert!(collector.accept(&invalid.to_string()).is_err());
+    }
+
+    #[test]
+    fn analyzer_events_enforce_protocol_v2_order() {
+        let mut collector = EventCollector::new("id".to_owned(), ProjectLanguage::Java);
+        collector.accept(&json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_name":"graphine-java-jdt","language":"java","analyzer_version":"x"}).to_string()).unwrap();
+        assert!(
+            collector
+                .accept(
+                    &json!({"type":"analysis_summary","summary":{"language":"java","files_discovered":0,"files_parsed":0,"files_failed":0,"bindings_resolved":0,"bindings_unresolved":0,"nodes_emitted":0,"edges_emitted":0,"duration_ms":0,"status":"complete"}})
+                        .to_string()
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -820,13 +1156,13 @@ mod tests {
             ("complete", AnalysisCompletionStatus::Complete),
             ("partial", AnalysisCompletionStatus::Partial),
         ] {
-            let mut collector = EventCollector::new("id".to_owned());
+            let mut collector = EventCollector::new("id".to_owned(), ProjectLanguage::Java);
             for event in [
-                json!({"type":"analysis_started","protocol_version":1,"request_id":"id","analyzer_version":"test"}),
-                json!({"type":"project_metadata","fingerprint":"abc","java_release":"17","classpath_resolution_ms":0,"modules":["fixture"]}),
+                json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_name":"graphine-java-jdt","language":"java","analyzer_version":"test"}),
+                json!({"type":"project_metadata","language":"java","fingerprint":"abc","modules":["fixture"],"configuration":{"java_release":"17","classpath_resolution_ms":0}}),
                 json!({"type":"module_discovered","name":"fixture","root":".","source_roots":["src/main/java"]}),
                 json!({"type":"node","stable_id":"type:sample.Subject","kind":"TYPE","qualified_name":"sample.Subject","file_path":"src/main/java/sample/Subject.java","start_line":1,"end_line":1,"confidence":"COMPILER_RESOLVED","provenance":"test","metadata":{},"unresolved":[]}),
-                json!({"type":"analysis_summary","summary":{"files_discovered":1,"files_parsed":1,"files_failed":0,"bindings_resolved":1,"bindings_unresolved":0,"nodes_emitted":1,"edges_emitted":0,"duration_ms":1,"classpath_resolution_ms":0,"parsing_ms":1,"serialization_ms":0,"peak_java_memory_bytes":1,"status":status}}),
+                json!({"type":"analysis_summary","summary":{"language":"java","files_discovered":1,"files_parsed":1,"files_failed":0,"bindings_resolved":1,"bindings_unresolved":0,"nodes_emitted":1,"edges_emitted":0,"duration_ms":1,"timings_ms":{"parsing":1,"total":1},"resources":{"peak_memory_bytes":1},"status":status}}),
                 json!({"type":"analysis_completed","status":status}),
             ] {
                 collector.accept(&event.to_string()).unwrap();
@@ -840,11 +1176,15 @@ mod tests {
             protocol_version: ANALYZER_PROTOCOL_VERSION,
             request_id: "supervision-test".to_owned(),
             operation: "analyze_project".to_owned(),
+            language: ProjectLanguage::Java,
             project_root: std::env::current_dir().unwrap(),
             mode: AnalyzerMode::Safe,
             source_sets: vec!["main".to_owned()],
             options: AnalyzerOptions::default(),
             maven_executable: PathBuf::from("mvn"),
+            cargo_executable: PathBuf::from("cargo"),
+            rustc_executable: PathBuf::from("rustc"),
+            cargo: CargoAnalysisOptions::default(),
             timeout_ms: 25,
         }
     }

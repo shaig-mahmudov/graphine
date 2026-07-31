@@ -17,7 +17,7 @@ use ra_ap_syntax::{
     AstNode, Edition, SourceFile,
     ast::{self, HasAttrs, HasName},
 };
-use ra_ap_vfs::{Vfs, VfsPath};
+use ra_ap_vfs::Vfs;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -688,7 +688,7 @@ fn discover_semantic_sources(
                 continue;
             };
             let path: &Path = absolute_path.as_ref();
-            if !path.starts_with(root)
+            if !path_is_within(path, root)
                 || path.extension().is_none_or(|extension| extension != "rs")
                 || !path.is_file()
             {
@@ -869,15 +869,9 @@ fn expand_trusted_attribute_macros(units: &[SourceUnit], workspace: &SemanticWor
     let sema = Semantics::new(&workspace.database);
     let mut expanded = 0_u64;
     for unit in units {
-        let path = unit
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| unit.path.clone());
-        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
-        let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) else {
+        let Some(file) = semantic_source_file(unit, &sema) else {
             continue;
         };
-        let file = sema.parse_guess_edition(file_id);
         for item in file.syntax().descendants().filter_map(ast::Item::cast) {
             if sema.expand_attr_macro(&item).is_some() {
                 expanded += 1;
@@ -895,17 +889,9 @@ fn collect_type_definitions(
     _request: &AnalyzeProjectRequest,
 ) {
     let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
-    let file = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
-        let path = unit
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| unit.path.clone());
-        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
-        if let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) {
-            sema.parse_guess_edition(file_id)
-        } else {
-            SourceFile::parse(&unit.text, Edition::CURRENT).tree()
-        }
+    let file = if let Some(sema) = sema.as_ref() {
+        semantic_source_file(unit, sema)
+            .unwrap_or_else(|| SourceFile::parse(&unit.text, Edition::CURRENT).tree())
     } else {
         SourceFile::parse(&unit.text, Edition::CURRENT).tree()
     };
@@ -1124,20 +1110,16 @@ fn collect_callable_definitions(
     _request: &AnalyzeProjectRequest,
 ) {
     let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
-    let (file, _) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
-        let path = unit
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| unit.path.clone());
-        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
-        if let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) {
-            (sema.parse_guess_edition(file_id), true)
-        } else {
-            (
-                SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
-                false,
-            )
-        }
+    let (file, _) = if let Some(sema) = sema.as_ref() {
+        semantic_source_file(unit, sema).map_or_else(
+            || {
+                (
+                    SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
+                    false,
+                )
+            },
+            |file| (file, true),
+        )
     } else {
         (
             SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
@@ -1249,20 +1231,16 @@ fn collect_relationships(
     request: &AnalyzeProjectRequest,
 ) {
     let sema = semantics.map(|workspace| Semantics::new(&workspace.database));
-    let (file, _) = if let (Some(workspace), Some(sema)) = (semantics, sema.as_ref()) {
-        let path = unit
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| unit.path.clone());
-        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
-        if let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) {
-            (sema.parse_guess_edition(file_id), true)
-        } else {
-            (
-                SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
-                false,
-            )
-        }
+    let (file, _) = if let Some(sema) = sema.as_ref() {
+        semantic_source_file(unit, sema).map_or_else(
+            || {
+                (
+                    SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
+                    false,
+                )
+            },
+            |file| (file, true),
+        )
     } else {
         (
             SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
@@ -2285,20 +2263,22 @@ impl GraphBuilder {
 
 fn parse_unit(unit: &SourceUnit, semantics: Option<&SemanticWorkspace>) -> (SourceFile, bool) {
     if let Some(workspace) = semantics {
-        let path = unit
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| unit.path.clone());
-        let vfs_path = VfsPath::new_real_path(path.to_string_lossy().into_owned());
-        if let Some((file_id, _)) = workspace.vfs.file_id(&vfs_path) {
-            let sema = Semantics::new(&workspace.database);
-            return (sema.parse_guess_edition(file_id), true);
+        let sema = Semantics::new(&workspace.database);
+        if let Some(file) = semantic_source_file(unit, &sema) {
+            return (file, true);
         }
     }
     (
         SourceFile::parse(&unit.text, Edition::CURRENT).tree(),
         false,
     )
+}
+
+fn semantic_source_file(
+    unit: &SourceUnit,
+    sema: &Semantics<'_, RootDatabase>,
+) -> Option<SourceFile> {
+    SourceFile::cast(sema.module_definition_node(unit.hir_module?).value)
 }
 
 fn fingerprint(
@@ -2878,6 +2858,12 @@ fn relative_slash(root: &Path, path: &Path) -> String {
 fn same_path(left: &Path, right: &Path) -> bool {
     left.canonicalize().unwrap_or_else(|_| left.to_path_buf())
         == right.canonicalize().unwrap_or_else(|_| right.to_path_buf())
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .starts_with(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
 }
 
 fn include_entry(entry: &DirEntry) -> bool {

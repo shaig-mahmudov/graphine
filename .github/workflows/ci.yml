@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -148,13 +149,21 @@ jobs:
       - name: Linux package and doctor smoke
         if: runner.os == 'Linux'
         run: |
+          mkdir -p target/release-dist/graphine
+          touch target/release-dist/graphine/stale-from-previous-package
           bash scripts/package-release.sh target/release-dist
+          test ! -e target/release-dist/graphine/stale-from-previous-package
+          ! tar -tzf target/release-dist/graphine-linux-x86_64.tar.gz | grep -q stale-from-previous-package
           target/release-dist/graphine/graphine --data-dir target/package-doctor doctor
       - name: Windows package and doctor smoke
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force target/release-dist/graphine | Out-Null
+          Set-Content target/release-dist/graphine/stale-from-previous-package stale
           ./scripts/package-release.ps1 target/release-dist
+          if (Test-Path target/release-dist/graphine/stale-from-previous-package) { throw "stale package staging file survived" }
+          if ((tar -tf target/release-dist/graphine-windows-x86_64.zip) -match "stale-from-previous-package") { throw "stale package staging file was archived" }
           ./target/release-dist/graphine/graphine.exe --data-dir target/package-doctor doctor
       - uses: actions/upload-artifact@v4
         with:
@@ -163,3 +172,25 @@ jobs:
             target/release-dist/*.zip
             target/release-dist/*.tar.gz
             target/release-dist/SHA256SUMS
+
+  release:
+    name: github-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graphine-*
+          path: release-downloads
+      - name: Assemble release assets
+        run: |
+          mkdir release-assets
+          find release-downloads -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp '{}' release-assets/ \;
+          (cd release-assets && sha256sum *.zip *.tar.gz > SHA256SUMS)
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --generate-notes --verify-tag

@@ -3,9 +3,14 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 output="${1:-$repo/dist}"
 stage="$output/graphine"
+if [[ "$stage" != "$output/graphine" || "$stage" == "/graphine" ]]; then
+  printf '%s\n' "invalid package staging path" >&2
+  exit 1
+fi
 cd "$repo"
 cargo build --release -p graphine-cli -p graphine-rust-analyzer
 mvn -q -f analyzer-jdt/pom.xml package
+rm -rf -- "$stage"
 mkdir -p "$stage/lib"
 cp target/release/graphine "$stage/graphine"
 cp target/release/graphine-rust-analyzer "$stage/graphine-rust-analyzer"

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::ffi::OsString;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -461,6 +463,8 @@ impl AnalyzerClient {
                 command.env(key, value);
             }
         }
+        #[cfg(unix)]
+        command.process_group(0);
         command
     }
 
@@ -951,6 +955,35 @@ fn read_bounded(reader: impl Read, limit: usize) -> Vec<u8> {
 }
 
 fn terminate(child: &mut Child) {
+    let process_id = child.id();
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if let Err(error) = status {
+            warn!(
+                ?error,
+                process_id, "failed to terminate analyzer process tree"
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{process_id}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if let Err(error) = status {
+            warn!(
+                ?error,
+                process_id, "failed to terminate analyzer process group"
+            );
+        }
+    }
     if let Err(error) = child.kill() {
         warn!(?error, "failed to kill analyzer worker");
     }
@@ -1220,6 +1253,56 @@ mod tests {
             client.run(&request(), &CancellationToken::default()),
             Err(GraphineError::AnalyzerTimeout)
         ));
+    }
+
+    #[test]
+    fn worker_timeout_terminates_descendant_processes() {
+        let root = std::env::temp_dir().join(format!(
+            "graphine-worker-tree-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = root.join("descendant-survived");
+        #[cfg(windows)]
+        let arguments = {
+            let child_script = root.join("delayed-write.ps1");
+            let escaped_sentinel = sentinel.to_string_lossy().replace('\'', "''");
+            std::fs::write(
+                &child_script,
+                format!(
+                    "Start-Sleep -Milliseconds 750\nSet-Content -LiteralPath '{escaped_sentinel}' -Value survived\n"
+                ),
+            )
+            .unwrap();
+            let escaped_script = child_script.to_string_lossy().replace('\'', "''");
+            vec![
+                OsString::from("-NoProfile"),
+                OsString::from("-Command"),
+                OsString::from(format!(
+                    r#"$scriptPath = '{escaped_script}'; Start-Process -FilePath powershell -WindowStyle Hidden -ArgumentList @('-NoProfile','-File',('"' + $scriptPath + '"')); while ($true) {{}}"#
+                )),
+            ]
+        };
+        #[cfg(not(windows))]
+        let arguments = vec![
+            OsString::from("-c"),
+            OsString::from(format!(
+                "(sleep 0.75; touch '{}') & while :; do :; done",
+                sentinel.to_string_lossy().replace('\'', "'\\''")
+            )),
+        ];
+        let client = client_with_override(arguments, Duration::from_millis(100));
+        assert!(matches!(
+            client.run(&request(), &CancellationToken::default()),
+            Err(GraphineError::AnalyzerTimeout)
+        ));
+        thread::sleep(Duration::from_secs(1));
+        assert!(
+            !sentinel.exists(),
+            "a descendant of the timed-out analyzer survived"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

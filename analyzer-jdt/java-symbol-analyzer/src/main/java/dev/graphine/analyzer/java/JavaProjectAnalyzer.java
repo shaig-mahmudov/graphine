@@ -95,13 +95,24 @@ public final class JavaProjectAnalyzer {
         collector.emit(writer);
         long serializationMs = Duration.ofNanos(System.nanoTime() - serializationStarted).toMillis();
         String status = failed.get() == 0 ? "complete" : "partial";
-        AnalysisSummary summary = new AnalysisSummary(files.size(), parsed.get(), failed.get(),
+        long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+        AnalysisSummary summary = new AnalysisSummary("java",
+                files.size(), parsed.get(), failed.get(),
                 collector.bindingsResolved, collector.bindingsUnresolved, collector.nodeCount(), collector.edgeCount(),
-                Duration.ofNanos(System.nanoTime() - started).toMillis(), model.classpathResolutionMs(), parsingMs,
-                springMs, serializationMs, peakMemory.get(), Map.of(
+                durationMs, Map.of(
                         AnalyzerCapabilities.JAVA_SEMANTICS, true,
                         AnalyzerCapabilities.SPRING_STATIC_SEMANTICS, true,
-                        AnalyzerCapabilities.SPRING_RUNTIME_SEMANTICS, false), status);
+                        AnalyzerCapabilities.SPRING_RUNTIME_SEMANTICS, false),
+                Map.of("classpath_resolution", model.classpathResolutionMs(),
+                        "parsing", parsingMs,
+                        "spring_semantic", springMs,
+                        "serialization", serializationMs,
+                        "total", durationMs),
+                Map.of("peak_memory_bytes", peakMemory.get()),
+                Map.of("mode", request.mode().name(),
+                        "java_release", model.javaRelease(),
+                        "source_sets", request.sourceSets()),
+                status);
         return new AnalysisResult(summary, status);
     }
 

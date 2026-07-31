@@ -3,6 +3,7 @@ use jsonschema::Validator;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -814,6 +815,43 @@ pub fn generate_medium_corpus(output: &Path, type_count: usize) -> Result<()> {
     Ok(())
 }
 
+/// Generates a deterministic, dependency-free Cargo corpus with one source
+/// module per requested unit.
+///
+/// # Errors
+///
+/// Returns an error when the destination is non-empty, the requested size is
+/// outside the bounded range, or files cannot be written.
+pub fn generate_rust_medium_corpus(output: &Path, module_count: usize) -> Result<()> {
+    if !(50..=2_000).contains(&module_count) {
+        bail!("module count must be between 50 and 2000");
+    }
+    if output.exists() && fs::read_dir(output)?.next().is_some() {
+        bail!("Rust medium corpus output must be empty");
+    }
+    let sources = output.join("src");
+    fs::create_dir_all(&sources)?;
+    fs::write(
+        output.join("Cargo.toml"),
+        "[package]\nname = \"graphine-rust-medium\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )?;
+    let mut root = String::from(
+        "#![forbid(unsafe_code)]\n\npub trait Stage {\n    fn apply(&mut self, input: u64) -> u64;\n}\n\n",
+    );
+    for index in 0..module_count {
+        writeln!(root, "pub mod m{index:04};").expect("writing to a string cannot fail");
+    }
+    fs::write(sources.join("lib.rs"), root)?;
+    for index in 0..module_count {
+        let next = (index + 1) % module_count;
+        let source = format!(
+            "use crate::Stage;\n\n#[derive(Default)]\npub struct S{index:04} {{\n    value: u64,\n}}\n\nimpl Stage for S{index:04} {{\n    fn apply(&mut self, input: u64) -> u64 {{\n        self.value += input;\n        self.value\n    }}\n}}\n\npub fn forward(stage: &mut S{next:04}, input: u64) -> u64 {{\n    stage.apply(input)\n}}\n"
+        );
+        fs::write(sources.join(format!("m{index:04}.rs")), source)?;
+    }
+    Ok(())
+}
+
 /// Generates a deterministic, dependency-free Spring-shaped Maven corpus.
 /// Framework annotations are source stubs with canonical Spring package names,
 /// allowing safe-mode static analysis without executing Maven or using a network.
@@ -1321,6 +1359,28 @@ mod tests {
             fs::read(first.join("pom.xml")).unwrap(),
             fs::read(second.join("pom.xml")).unwrap()
         );
+    }
+
+    #[test]
+    fn rust_medium_corpus_has_bounded_deterministic_modules() {
+        let output = std::env::temp_dir().join(format!(
+            "graphine-rust-medium-test-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
+        ));
+        if output.exists() {
+            fs::remove_dir_all(&output).unwrap();
+        }
+        generate_rust_medium_corpus(&output, 50).unwrap();
+        let module = fs::read_to_string(output.join("src/m0049.rs")).unwrap();
+        assert!(module.contains("pub struct S0049"));
+        assert!(module.contains("stage: &mut S0000"));
+        let root = fs::read_to_string(output.join("src/lib.rs")).unwrap();
+        assert!(root.contains("pub mod m0049;"));
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]

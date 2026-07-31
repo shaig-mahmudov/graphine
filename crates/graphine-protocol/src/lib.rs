@@ -7,13 +7,47 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: i64 = 3;
-pub const ANALYZER_PROTOCOL_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: i64 = 4;
+pub const ANALYZER_PROTOCOL_VERSION: u32 = 2;
 pub const ANALYZER_CAPABILITY_JAVA_SEMANTICS: &str = "java_semantics";
 pub const ANALYZER_CAPABILITY_SPRING_STATIC_SEMANTICS: &str = "spring_static_semantics";
 pub const ANALYZER_CAPABILITY_MAVEN_TRUSTED_MODE: &str = "maven_trusted_mode";
+pub const ANALYZER_CAPABILITY_RUST_SEMANTICS: &str = "rust_semantics";
+pub const ANALYZER_CAPABILITY_CARGO_SAFE_MODE: &str = "cargo_safe_mode";
+pub const ANALYZER_CAPABILITY_CARGO_TRUSTED_MODE: &str = "cargo_trusted_mode";
 pub const ANALYZER_PLACEHOLDER: &str = "synthetic-phase-1";
 pub const PROJECT_NAMESPACE: Uuid = Uuid::from_u128(0x2bbd_0781_53ac_4e83_9e4b_87ec_ad76_bf89);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectLanguage {
+    #[default]
+    Java,
+    Rust,
+}
+
+impl fmt::Display for ProjectLanguage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Java => "java",
+            Self::Rust => "rust",
+        })
+    }
+}
+
+impl FromStr for ProjectLanguage {
+    type Err = GraphineError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "java" => Ok(Self::Java),
+            "rust" => Ok(Self::Rust),
+            _ => Err(GraphineError::InvalidArgument(format!(
+                "unsupported project language: {value}"
+            ))),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -104,9 +138,9 @@ impl StableId {
             .split_once(':')
             .ok_or_else(|| GraphineError::InvalidStableId(value.clone()))?;
         let valid = match kind {
-            "project" | "module" | "package" | "type" | "bean" | "entity" | "config" => {
-                !body.trim().is_empty()
-            }
+            "project" | "crate" | "module" | "package" | "type" | "trait" | "function"
+            | "variant" | "const" | "static" | "macro" | "associated_type" | "bean" | "entity"
+            | "config" => !body.trim().is_empty(),
             "method" | "constructor" => {
                 let Some((owner, method)) = body.split_once('#') else {
                     return Err(GraphineError::InvalidStableId(value));
@@ -210,6 +244,8 @@ pub struct SyntheticNode {
     #[serde(default)]
     pub package_name: Option<String>,
     #[serde(default)]
+    pub namespace_path: Option<String>,
+    #[serde(default)]
     pub file_path: Option<String>,
     #[serde(default)]
     pub start_line: Option<u32>,
@@ -249,7 +285,9 @@ pub struct EdgeOccurrence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzerHello {
     pub protocol_version: u32,
+    pub analyzer_name: String,
     pub analyzer_version: String,
+    pub language: ProjectLanguage,
     pub capabilities: Vec<String>,
 }
 
@@ -269,6 +307,18 @@ pub struct AnalyzerOptions {
     pub explicit_classpath: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoAnalysisOptions {
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub all_features: bool,
+    #[serde(default)]
+    pub no_default_features: bool,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
 impl Default for AnalyzerOptions {
     fn default() -> Self {
         Self {
@@ -285,11 +335,19 @@ pub struct AnalyzeProjectRequest {
     pub protocol_version: u32,
     pub request_id: String,
     pub operation: String,
+    #[serde(default)]
+    pub language: ProjectLanguage,
     pub project_root: PathBuf,
     pub mode: AnalyzerMode,
     pub source_sets: Vec<String>,
     pub options: AnalyzerOptions,
     pub maven_executable: PathBuf,
+    #[serde(default = "default_cargo_executable")]
+    pub cargo_executable: PathBuf,
+    #[serde(default = "default_rustc_executable")]
+    pub rustc_executable: PathBuf,
+    #[serde(default)]
+    pub cargo: CargoAnalysisOptions,
     pub timeout_ms: u64,
 }
 
@@ -299,13 +357,16 @@ pub enum AnalyzerEvent {
     AnalysisStarted {
         protocol_version: u32,
         request_id: String,
+        analyzer_name: String,
+        language: ProjectLanguage,
         analyzer_version: String,
     },
     ProjectMetadata {
+        language: ProjectLanguage,
         fingerprint: String,
-        java_release: String,
-        classpath_resolution_ms: u64,
         modules: Vec<String>,
+        #[serde(default = "empty_object")]
+        configuration: Value,
     },
     ModuleDiscovered {
         name: String,
@@ -364,6 +425,8 @@ fn default_warning_severity() -> String {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzerSummary {
+    #[serde(default)]
+    pub language: ProjectLanguage,
     pub files_discovered: u64,
     pub files_parsed: u64,
     pub files_failed: u64,
@@ -372,14 +435,14 @@ pub struct AnalyzerSummary {
     pub nodes_emitted: u64,
     pub edges_emitted: u64,
     pub duration_ms: u64,
-    pub classpath_resolution_ms: u64,
-    pub parsing_ms: u64,
-    #[serde(default)]
-    pub spring_semantic_ms: u64,
-    pub serialization_ms: u64,
-    pub peak_java_memory_bytes: u64,
     #[serde(default)]
     pub capabilities: std::collections::BTreeMap<String, bool>,
+    #[serde(default)]
+    pub timings_ms: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub resources: std::collections::BTreeMap<String, u64>,
+    #[serde(default = "empty_object")]
+    pub configuration: Value,
     pub status: String,
 }
 
@@ -506,9 +569,13 @@ pub struct GraphineConfig {
     pub allowed_repository_roots: Vec<PathBuf>,
     pub sqlite_timeout_ms: u64,
     pub mcp_transport: String,
-    pub analyzer_jar: Option<PathBuf>,
+    #[serde(alias = "analyzer_jar")]
+    pub java_analyzer_jar: Option<PathBuf>,
+    pub rust_analyzer_worker: Option<PathBuf>,
     pub java_executable: PathBuf,
     pub maven_executable: PathBuf,
+    pub cargo_executable: PathBuf,
+    pub rustc_executable: PathBuf,
     pub analyzer_timeout_ms: u64,
     pub analyzer_output_limit_bytes: usize,
     pub allow_partial_activation: bool,
@@ -529,9 +596,12 @@ impl Default for GraphineConfig {
             allowed_repository_roots: Vec::new(),
             sqlite_timeout_ms: 5_000,
             mcp_transport: "stdio".to_owned(),
-            analyzer_jar: None,
+            java_analyzer_jar: None,
+            rust_analyzer_worker: None,
             java_executable: PathBuf::from("java"),
             maven_executable: PathBuf::from(if cfg!(windows) { "mvn.cmd" } else { "mvn" }),
+            cargo_executable: default_cargo_executable(),
+            rustc_executable: default_rustc_executable(),
             analyzer_timeout_ms: 120_000,
             analyzer_output_limit_bytes: 64 * 1024 * 1024,
             allow_partial_activation: false,
@@ -617,6 +687,8 @@ pub enum GraphineError {
     AnalyzerTimeout,
     #[error("analyzer process failed")]
     AnalyzerFailed,
+    #[error("capability is not supported for this project")]
+    CapabilityNotSupported,
     #[error("partial analysis activation is disabled")]
     AnalysisPartial,
     #[error("analysis was cancelled")]
@@ -646,6 +718,7 @@ impl GraphineError {
             Self::AnalyzerProtocol => "analyzer_protocol_error",
             Self::AnalyzerTimeout => "analyzer_timeout",
             Self::AnalyzerFailed => "analyzer_failed",
+            Self::CapabilityNotSupported => "capability_not_supported",
             Self::AnalysisPartial => "analysis_partial",
             Self::AnalysisCancelled => "analysis_cancelled",
             Self::Internal => "internal_error",
@@ -654,8 +727,23 @@ impl GraphineError {
 
     #[must_use]
     pub fn safe_data(&self) -> Value {
-        serde_json::json!({"code": self.code()})
+        if matches!(self, Self::CapabilityNotSupported) {
+            serde_json::json!({
+                "code": self.code(),
+                "suggested_tools": ["get_project_map", "search_symbol", "get_symbol_context", "trace_flow"]
+            })
+        } else {
+            serde_json::json!({"code": self.code()})
+        }
     }
+}
+
+fn default_cargo_executable() -> PathBuf {
+    PathBuf::from(if cfg!(windows) { "cargo.exe" } else { "cargo" })
+}
+
+fn default_rustc_executable() -> PathBuf {
+    PathBuf::from(if cfg!(windows) { "rustc.exe" } else { "rustc" })
 }
 
 #[cfg(test)]
@@ -672,6 +760,12 @@ mod tests {
             "route:POST:/api/events",
             "bean:eventService",
             "config:mail.api-key",
+            "crate:app/lib/app",
+            "module:crate:app/lib/app::crate",
+            "trait:crate:app/lib/app::crate::Store",
+            "function:crate:app/lib/app::crate::process()",
+            "method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()",
+            "associated_type:crate:app/lib/app::crate::Store::Error",
         ];
         for value in valid {
             assert!(StableId::parse(value).is_ok(), "{value}");
@@ -708,6 +802,9 @@ mod tests {
         assert_eq!(config.default_token_budget, 900);
         assert_eq!(config.maximum_token_budget, 4_000);
         assert!(config.validate().is_ok());
+        let aliased: GraphineConfig =
+            serde_json::from_str(r#"{"analyzer_jar":"legacy.jar"}"#).unwrap();
+        assert_eq!(aliased.java_analyzer_jar, Some(PathBuf::from("legacy.jar")));
         assert!(
             serde_json::from_str::<GraphineConfig>(r#"{"remote_url":"https://example.com"}"#)
                 .is_err()

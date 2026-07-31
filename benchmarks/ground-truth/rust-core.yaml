@@ -1,0 +1,86 @@
+question_id: rust-core-001
+status: answerable
+expected: {packages: [app, support, local-macro], target_kinds: [lib, test, example, bench, custom-build, proc-macro]}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: Cargo.toml, start_line: 1, end_line: 3}
+  - {file: app/Cargo.toml, start_line: 1, end_line: 22}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: rust-core-002
+status: answerable
+expected: {implementation: MemoryStore, trait: Store, method: save}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 9, end_line: 17}
+  - {file: app/src/lib.rs, start_line: 25, end_line: 33}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: rust-core-003
+status: answerable
+expected: {target: Store.save, dispatch: dynamic_trait, runtime_implementation_inferred: false}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 49, end_line: 55}
+allowed_ambiguities: [The runtime implementor is intentionally not inferred]
+forbidden_claims: [MemoryStore.save is the guaranteed runtime target]
+---
+question_id: rust-core-004
+status: answerable
+expected: {writes: [MemoryStore.writes], reads: [MemoryStore.entries, MemoryStore.writes]}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 20, end_line: 32}
+allowed_ambiguities: [Calling Vec.push is represented as access to entries, not an ownership/runtime mutation trace]
+forbidden_claims: []
+---
+question_id: rust-core-005
+status: answerable
+expected: {accepts: [Store], returns: [Event, Identifier]}
+confidence_required: STATIC_INFERRED
+evidence:
+  - {file: app/src/lib.rs, start_line: 49, end_line: 55}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: rust-core-006
+status: answerable
+expected: {macro: tracked, expanded_call: normalize, feature: fancy, gated_function: feature_only}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 3, end_line: 7}
+  - {file: app/src/lib.rs, start_line: 40, end_line: 46}
+  - {file: app/src/lib.rs, start_line: 80, end_line: 83}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: rust-core-007
+status: answerable
+expected: {unit_test: tests::stores_an_event, integration_test: integration_flow}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 85, end_line: 96}
+  - {file: app/tests/flow.rs, start_line: 1, end_line: 10}
+allowed_ambiguities: []
+forbidden_claims: []
+---
+question_id: rust-core-008
+status: answerable
+expected: {safe_mode_executes_build_script: false, safe_mode_executes_proc_macro: false}
+confidence_required: UNRESOLVED
+evidence:
+  - {file: app/build.rs, start_line: 1, end_line: 6}
+  - {file: local-macro/src/lib.rs, start_line: 1, end_line: 6}
+allowed_ambiguities: [Attributed source declarations remain visible without executing the procedural macro]
+forbidden_claims: [Safe mode executed project code]
+---
+question_id: rust-core-009
+status: answerable
+expected: {target: MemoryStore.save, dispatch: static}
+confidence_required: COMPILER_RESOLVED
+evidence:
+  - {file: app/src/lib.rs, start_line: 57, end_line: 62}
+allowed_ambiguities: []
+forbidden_claims: [Store.save is the final target for a statically typed MemoryStore receiver]

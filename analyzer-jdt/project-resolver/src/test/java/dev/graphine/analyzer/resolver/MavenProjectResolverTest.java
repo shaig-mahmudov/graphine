@@ -35,7 +35,7 @@ final class MavenProjectResolverTest {
                 <project><modelVersion>4.0.0</modelVersion><groupId>sample</groupId><artifactId>api</artifactId>
                 <version>1</version></project>
                 """);
-        AnalysisRequest request = new AnalysisRequest(1, "test", "analyze_project", root, AnalyzerMode.safe,
+        AnalysisRequest request = new AnalysisRequest(2, "test", "analyze_project", root, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, List.of()),
                 root.resolve("must-not-run-maven"), 10_000);
         List<Diagnostic> diagnostics = new ArrayList<>();
@@ -151,7 +151,7 @@ final class MavenProjectResolverTest {
     }
 
     private static AnalysisRequest request(Path project, List<String> classpath) {
-        return new AnalysisRequest(1, "test", "analyze_project", project, AnalyzerMode.safe,
+        return new AnalysisRequest(2, "test", "analyze_project", project, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, classpath),
                 project.resolve("must-not-run-maven"), 10_000);
     }

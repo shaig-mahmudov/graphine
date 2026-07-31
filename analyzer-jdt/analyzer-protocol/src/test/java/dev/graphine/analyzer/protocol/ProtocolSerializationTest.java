@@ -10,11 +10,12 @@ class ProtocolSerializationTest {
     @Test void requestUsesVersionedSnakeCaseFields() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         mapper.findAndRegisterModules();
-        AnalysisRequest request = new AnalysisRequest(1, "index-1", "analyze_project", Path.of("project"),
+        AnalysisRequest request = new AnalysisRequest(2, "index-1", "analyze_project", Path.of("project"),
                 AnalyzerMode.safe, List.of("main"), new AnalyzerOptions(true, true, false, List.of()),
                 Path.of("mvn"), 1000);
         String json = mapper.writeValueAsString(request);
-        assertTrue(json.contains("\"protocol_version\":1"));
+        assertTrue(json.contains("\"protocol_version\":2"));
+        assertTrue(json.contains("\"language\":\"java\""));
         AnalysisRequest decoded = mapper.readValue(json, AnalysisRequest.class);
         assertEquals(request.protocolVersion(), decoded.protocolVersion());
         assertEquals(request.requestId(), decoded.requestId());

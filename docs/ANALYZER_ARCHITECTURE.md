@@ -1,4 +1,4 @@
-# Java analyzer architecture
+# Analyzer worker architecture
 
 Graphine keeps Java analysis behind an independently runnable JVM process:
 
@@ -26,3 +26,11 @@ Install-time inspection is separate from analysis. The supervisor invokes `--met
 Call edges target the compiler-resolved declaration. Metadata distinguishes `exactly_resolved` from `virtual_declared_target`. The latter is not a claim about the runtime implementation. Method references include `runtime_execution: not_proven`; lambdas store their resolved functional-interface type without claiming execution.
 
 Spring rules never live in the generic symbol visitor. The dedicated bounded pass interprets resolved annotations, safe recovered import names, constants, compiler types, method calls, Maven source metadata, and configuration keys. It emits framework evidence with `FRAMEWORK_RESOLVED`, `STATIC_INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`; the current static analyzer never emits `RUNTIME_CONFIRMED`.
+
+## Rust worker
+
+`graphine-rust-analyzer` is an independent binary using exact-pinned `ra_ap_* = 0.0.342` crates. It discovers Cargo workspace members and standard targets, loads semantic state through rust-analyzer, and emits protocol-v2 normalized facts. rust-analyzer types and database handles remain inside the worker boundary.
+
+Safe mode explicitly disables build scripts, build data, and procedural macros and requests offline Cargo loading. Trusted mode may enable those facilities only after an explicit CLI selection. Syntax recovery remains available when Cargo or generated inputs are incomplete, but such facts are downgraded and accompanied by diagnostics.
+
+The Rust worker emits trait declaration targets for generic and trait-object dispatch unless a statically typed concrete receiver is compiler-resolved. It never enumerates possible runtime implementations as deterministic call targets. The supervisor applies the same stream bounds, timeout, cancellation, validation, and atomic activation rules to Java and Rust.

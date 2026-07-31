@@ -15,10 +15,11 @@ try {
     foreach ($fixture in @("java-core", "java-unresolved")) {
         $project = [IO.Path]::GetFullPath((Join-Path $repo "fixtures/$fixture"))
         $request = @{
-            protocol_version = 1; request_id = "accuracy-$fixture"; operation = "analyze_project"
-            project_root = $project; mode = "safe"; source_sets = @("main", "test")
+            protocol_version = 2; request_id = "accuracy-$fixture"; operation = "analyze_project"
+            language = "java"; project_root = $project; mode = "safe"; source_sets = @("main", "test")
             options = @{ include_method_bodies = $true; include_field_access = $true; include_tests = $true; explicit_classpath = @() }
-            maven_executable = "mvn.cmd"; timeout_ms = 120000
+            maven_executable = "mvn.cmd"; cargo_executable = "cargo.exe"; rustc_executable = "rustc.exe"
+            cargo = @{}; timeout_ms = 120000
         } | ConvertTo-Json -Depth 5 -Compress
         $jsonl = Join-Path $temp "$fixture.jsonl"
         $jsonLines = @($request | & java -Xmx1024m -jar $jar)

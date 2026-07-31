@@ -192,7 +192,8 @@ pub fn run_stdio<R: BufRead, W: Write>(
         if input.read_line(&mut line)? == 0 {
             break;
         }
-        let trimmed = line.trim();
+        // Windows PowerShell 5.1 prefixes the first native-pipeline record with a UTF-8 BOM.
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
         if trimmed.is_empty() {
             continue;
         }
@@ -230,7 +231,7 @@ fn initialize_result(protocol_version: &str) -> Value {
         "protocolVersion": protocol_version,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "graphine", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "Graphine serves the active local Java graph. Analysis is explicit; MCP reads never execute Maven or trigger indexing. Compiler-resolved relationships include dispatch metadata, while unresolved bindings remain diagnostics."
+        "instructions": "Graphine serves active local Java/Spring and Rust semantic graphs. Analysis is explicit; MCP reads never execute build tools or trigger indexing. Compiler-resolved relationships include dispatch metadata, while unresolved bindings remain diagnostics."
     })
 }
 
@@ -250,7 +251,7 @@ fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
             "get_project_map",
-            "Returns a compact application map with major packages and Spring role counts. Use first when orienting in a project.",
+            "Returns a compact language-aware application map: Spring roles for Java, and crate/module/type/trait/function/test counts for Rust.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project"],
                 "properties":{"project":{"type":"string"},"scope":{"enum":["application"]},"token_budget":{"type":"integer","minimum":128}}
@@ -261,20 +262,20 @@ fn tool_definitions() -> Vec<Value> {
             "Finds likely symbols or routes with deterministic lexical and structural ranking. Use to disambiguate a human name before requesting context.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","query"],
-                "properties":{"project":{"type":"string"},"query":{"type":"string"},"kinds":{"type":"array","items":{"type":"string"}},"framework_roles":{"type":"array","items":{"type":"string"}},"module":{"type":"string"},"package_prefix":{"type":"string"},"limit":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"query":{"type":"string"},"kinds":{"type":"array","items":{"type":"string"}},"framework_roles":{"type":"array","items":{"type":"string"}},"module":{"type":"string"},"namespace_prefix":{"type":"string"},"package_prefix":{"type":"string"},"limit":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
             "get_symbol_context",
-            "Returns semantically grouped callers, callees, injections, data access, routes, events, tests, and evidence for one symbol.",
+            "Returns language-aware callers, callees, types, implementations, imports, field access, framework groups, tests, and evidence for one symbol.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","stable_id"],
-                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"include":{"type":"array","items":{"enum":["callers","callees","injections","data_access","routes","events","tests"]}},"depth":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"stable_id":{"type":"string"},"include":{"type":"array","items":{"enum":["callers","callees","injections","data_access","routes","events","tests","types","implementations","imports","field_access"]}},"depth":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"detail":{"enum":["summary","standard","detailed","evidence"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
             "get_endpoint_context",
-            "Returns static Spring flow, data access, validation, events, dependencies, and evidence for one HTTP endpoint. Use before reading controller or service files.",
+            "Returns static Spring flow, data access, validation, events, dependencies, and evidence for one Java endpoint. Rust returns capability_not_supported with general-tool suggestions.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project"],
                 "properties":{"project":{"type":"string"},"route_stable_id":{"type":"string"},"method":{"type":"string"},"path":{"type":"string"},"controller_method_stable_id":{"type":"string"},"max_depth":{"type":"integer","minimum":1},"include":{"type":"array","items":{"enum":["validation","dependencies","data_access","events","configuration"]}},"suppression_policy":{"enum":["agent-default-v1","none"]},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}},
@@ -286,7 +287,7 @@ fn tool_definitions() -> Vec<Value> {
             "Returns bounded grouped graph paths when symbol or endpoint context is insufficient. Supports application-only shortest or bounded all-path traversal.",
             json!({
                 "type":"object","additionalProperties":false,"required":["project","start_stable_id"],
-                "properties":{"project":{"type":"string"},"start_stable_id":{"type":"string"},"direction":{"enum":["inbound","outbound"]},"edge_kinds":{"type":"array","items":{"type":"string"}},"edge_groups":{"type":"array","items":{"enum":["calls","data_access","events","dependencies","routes"]}},"node_kinds":{"type":"array","items":{"type":"string"}},"application_only":{"type":"boolean"},"suppress_external":{"type":"boolean"},"mode":{"enum":["shortest_path","all_paths_bounded"]},"max_depth":{"type":"integer","minimum":1},"max_nodes":{"type":"integer","minimum":1},"max_paths":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}}
+                "properties":{"project":{"type":"string"},"start_stable_id":{"type":"string"},"direction":{"enum":["inbound","outbound"]},"edge_kinds":{"type":"array","items":{"type":"string"}},"edge_groups":{"type":"array","items":{"enum":["calls","data_access","events","dependencies","routes","types","imports"]}},"node_kinds":{"type":"array","items":{"type":"string"}},"application_only":{"type":"boolean"},"suppress_external":{"type":"boolean"},"mode":{"enum":["shortest_path","all_paths_bounded"]},"max_depth":{"type":"integer","minimum":1},"max_nodes":{"type":"integer","minimum":1},"max_paths":{"type":"integer","minimum":1},"cursor":{"type":["string","null"]},"token_budget":{"type":"integer","minimum":128}}
             }),
         ),
         tool(
@@ -330,13 +331,19 @@ mod tests {
         ))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn server() -> McpServer {
         let root = fixture_root();
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("Controller.java"), "class Controller {}\n").unwrap();
         let mut database = Database::open_in_memory().unwrap();
         database
-            .register_project(&root, Some("mcp-fixture"), &[])
+            .register_project(
+                &root,
+                Some("mcp-fixture"),
+                graphine_protocol::ProjectLanguage::Java,
+                &[],
+            )
             .unwrap();
         let nodes = vec![
             SyntheticNode {
@@ -346,6 +353,7 @@ mod tests {
                 simple_name: None,
                 module_name: Some("app".to_owned()),
                 package_name: Some("example".to_owned()),
+                namespace_path: Some("example".to_owned()),
                 file_path: Some("Controller.java".to_owned()),
                 start_line: Some(1),
                 end_line: Some(1),
@@ -361,6 +369,7 @@ mod tests {
                 simple_name: Some("create".to_owned()),
                 module_name: Some("app".to_owned()),
                 package_name: Some("example".to_owned()),
+                namespace_path: Some("example".to_owned()),
                 file_path: Some("Controller.java".to_owned()),
                 start_line: Some(1),
                 end_line: Some(1),
@@ -376,6 +385,7 @@ mod tests {
                 simple_name: Some("create".to_owned()),
                 module_name: Some("app".to_owned()),
                 package_name: Some("example".to_owned()),
+                namespace_path: Some("example".to_owned()),
                 file_path: Some("Controller.java".to_owned()),
                 start_line: Some(1),
                 end_line: Some(1),
@@ -429,6 +439,113 @@ mod tests {
             ..GraphineConfig::default()
         };
         McpServer::new(database, config)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn rust_server() -> McpServer {
+        let root = fixture_root();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub trait Store { fn save(&mut self); }\npub struct MemoryStore;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname=\"mcp-rust\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+        let mut database = Database::open_in_memory().unwrap();
+        database
+            .register_project(
+                &root,
+                Some("mcp-rust"),
+                graphine_protocol::ProjectLanguage::Rust,
+                &[],
+            )
+            .unwrap();
+        let node = |stable_id: &str,
+                    kind: &str,
+                    qualified_name: &str,
+                    simple_name: &str,
+                    metadata: Value| SyntheticNode {
+            stable_id: stable_id.to_owned(),
+            kind: kind.to_owned(),
+            qualified_name: qualified_name.to_owned(),
+            simple_name: Some(simple_name.to_owned()),
+            module_name: Some("crate:mcp-rust/lib/mcp_rust".to_owned()),
+            package_name: None,
+            namespace_path: Some("crate".to_owned()),
+            file_path: Some("src/lib.rs".to_owned()),
+            start_line: Some(1),
+            end_line: Some(2),
+            confidence: Confidence::CompilerResolved,
+            provenance: "rust-analyzer".to_owned(),
+            metadata,
+            unresolved: Vec::new(),
+        };
+        let nodes = vec![
+            node(
+                "crate:mcp-rust/lib/mcp_rust",
+                "crate",
+                "mcp-rust::mcp_rust",
+                "mcp_rust",
+                json!({"language":"rust"}),
+            ),
+            node(
+                "trait:crate:mcp-rust/lib/mcp_rust::crate::Store",
+                "trait",
+                "crate::Store",
+                "Store",
+                json!({"language":"rust"}),
+            ),
+            node(
+                "type:crate:mcp-rust/lib/mcp_rust::crate::MemoryStore",
+                "type",
+                "crate::MemoryStore",
+                "MemoryStore",
+                json!({"language":"rust"}),
+            ),
+            node(
+                "method:crate:mcp-rust/lib/mcp_rust::crate::Store#save()",
+                "method",
+                "crate::Store::save",
+                "save",
+                json!({"language":"rust","signature":"fn save(&mut self)","owner":"trait:crate:mcp-rust/lib/mcp_rust::crate::Store"}),
+            ),
+        ];
+        let edges = vec![
+            SyntheticEdge {
+                source_stable_id: "type:crate:mcp-rust/lib/mcp_rust::crate::MemoryStore".to_owned(),
+                target_stable_id: "trait:crate:mcp-rust/lib/mcp_rust::crate::Store".to_owned(),
+                kind: "IMPLEMENTS".to_owned(),
+                confidence: Confidence::CompilerResolved,
+                provenance: "rust-analyzer".to_owned(),
+                metadata: json!({}),
+                occurrences: Vec::new(),
+            },
+            SyntheticEdge {
+                source_stable_id: "method:crate:mcp-rust/lib/mcp_rust::crate::Store#save()"
+                    .to_owned(),
+                target_stable_id: "trait:crate:mcp-rust/lib/mcp_rust::crate::Store".to_owned(),
+                kind: "RETURNS_TYPE".to_owned(),
+                confidence: Confidence::CompilerResolved,
+                provenance: "rust-analyzer".to_owned(),
+                metadata: json!({}),
+                occurrences: Vec::new(),
+            },
+        ];
+        database
+            .load_synthetic(
+                "mcp-rust",
+                &SyntheticGraph {
+                    project: "mcp-rust".to_owned(),
+                    nodes,
+                    edges,
+                },
+            )
+            .unwrap();
+        McpServer::new(database, GraphineConfig::default())
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -519,6 +636,7 @@ mod tests {
                 simple_name: None,
                 module_name: None,
                 package_name: Some("example".to_owned()),
+                namespace_path: Some("example".to_owned()),
                 file_path: Some("Controller.java".to_owned()),
                 start_line: Some(1),
                 end_line: Some(1),
@@ -590,6 +708,82 @@ mod tests {
     }
 
     #[test]
+    fn general_mcp_tools_are_language_aware_for_rust() {
+        let server = rust_server();
+        initialize(&server);
+        let invoke = |id: i64, name: &str, arguments: Value| {
+            server
+                .handle_value(request(
+                    id,
+                    "tools/call",
+                    json!({"name":name,"arguments":arguments}),
+                ))
+                .unwrap()
+        };
+        let map = invoke(
+            1,
+            "get_project_map",
+            json!({"project":"mcp-rust","token_budget":800}),
+        );
+        assert_eq!(
+            map["result"]["structuredContent"]["result"]["language"],
+            "rust"
+        );
+        assert_eq!(
+            map["result"]["structuredContent"]["result"]["summary"]["traits"],
+            1
+        );
+
+        let search = invoke(
+            2,
+            "search_symbol",
+            json!({"project":"mcp-rust","query":"MemoryStore","namespace_prefix":"crate","token_budget":800}),
+        );
+        assert_eq!(search["result"]["isError"], false);
+        assert_eq!(
+            search["result"]["structuredContent"]["result"]["results"][0]["language"],
+            "rust"
+        );
+
+        let context = invoke(
+            3,
+            "get_symbol_context",
+            json!({"project":"mcp-rust","stable_id":"method:crate:mcp-rust/lib/mcp_rust::crate::Store#save()","include":["types","implementations"],"token_budget":1200}),
+        );
+        let symbol = &context["result"]["structuredContent"]["result"]["symbol"];
+        assert_eq!(symbol["language"], "rust");
+        assert_eq!(symbol["signature"], "fn save(&mut self)");
+        assert!(symbol["java_signature"].is_null());
+
+        let status = invoke(
+            4,
+            "index_status",
+            json!({"project":"mcp-rust","token_budget":800}),
+        );
+        assert_eq!(
+            status["result"]["structuredContent"]["result"]["language"],
+            "rust"
+        );
+
+        let endpoint = invoke(
+            5,
+            "get_endpoint_context",
+            json!({"project":"mcp-rust","method":"GET","path":"/","token_budget":800}),
+        );
+        assert_eq!(
+            endpoint["error"]["data"]["code"],
+            "capability_not_supported"
+        );
+        assert!(
+            endpoint["error"]["data"]["suggested_tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool == "get_symbol_context")
+        );
+    }
+
+    #[test]
     fn invalid_projects_and_malformed_arguments_map_to_safe_errors() {
         let server = server();
         initialize(&server);
@@ -642,7 +836,7 @@ mod tests {
     fn stdio_transport_initializes_calls_and_shuts_down() {
         let server = server();
         let input = format!(
-            "{}\n{}\n{}\n{}\n{}\n",
+            "\u{feff}{}\n{}\n{}\n{}\n{}\n",
             request(1, "initialize", initialize_params(LATEST_PROTOCOL_VERSION)),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             request(

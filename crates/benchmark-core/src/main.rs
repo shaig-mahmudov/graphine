@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use benchmark_core::{
     Corpus, compare_agent_sessions, evaluate_graph_jsonl, generate_medium_corpus,
-    generate_spring_medium_corpus, load_agent_session, validate_report,
-    write_agent_comparison_report, write_graph_accuracy_report, write_report,
+    generate_rust_medium_corpus, generate_spring_medium_corpus, load_agent_session,
+    validate_report, write_agent_comparison_report, write_graph_accuracy_report, write_report,
 };
 use std::env;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ fn main() -> Result<()> {
             write_report(&path, &report)?;
             println!("wrote {}", path.display());
         }
-        "evaluate-java" => {
+        "evaluate-graph" | "evaluate-java" => {
             expect_flag(&mut args, "--input")?;
             let input = resolve_output(&root, &args.next().context("--input requires a path")?);
             expect_flag(&mut args, "--truth")?;
@@ -90,6 +90,19 @@ fn main() -> Result<()> {
         "generate-spring-medium" => {
             generate_spring_medium_command(&mut args, &root)?;
         }
+        "generate-rust-medium" => {
+            expect_flag(&mut args, "--output")?;
+            let output = resolve_output(&root, &args.next().context("--output requires a path")?);
+            expect_flag(&mut args, "--modules")?;
+            let modules: usize = args
+                .next()
+                .context("--modules requires a number")?
+                .parse()
+                .context("invalid module count")?;
+            reject_extra_args(args)?;
+            generate_rust_medium_corpus(&output, modules)?;
+            println!("generated {modules} Rust modules at {}", output.display());
+        }
         "compare-agents" => {
             expect_flag(&mut args, "--baseline")?;
             let baseline =
@@ -112,7 +125,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-java --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core compare-agents --baseline <session.json> --graphine <session.json> --output <report.json>\n  benchmark-core generate-medium --output <path> --types <n>\n  benchmark-core generate-spring-medium --output <path> --controllers <n>"
+                "Graphine benchmark corpus tools\n\n  benchmark-core validate\n  benchmark-core stats\n  benchmark-core report --output <path>\n  benchmark-core evaluate-graph --input <jsonl> --truth <json> --output <json> --min-precision <n> --min-recall <n>\n  benchmark-core evaluate-java ...  # compatibility alias\n  benchmark-core compare-agents --baseline <session.json> --graphine <session.json> --output <report.json>\n  benchmark-core generate-medium --output <path> --types <n>\n  benchmark-core generate-spring-medium --output <path> --controllers <n>\n  benchmark-core generate-rust-medium --output <path> --modules <n>"
             );
             if command != "help" && command != "--help" && command != "-h" {
                 bail!("unknown command: {command}");

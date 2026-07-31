@@ -67,7 +67,7 @@ try {
         corpus = [ordered]@{ generator = "benchmark-core generate-medium"; type_count = $Types; file_count = $files.Count; source_lines = $sourceLines }
         graph = [ordered]@{ node_count = $status.node_count; edge_count = $status.edge_count; occurrence_count = $status.occurrence_count; database_bytes = (Get-Item -LiteralPath $database).Length }
         timing_ms = [ordered]@{ end_to_end_analysis = $watch.ElapsedMilliseconds; analyzer = $analysis.summary.duration_ms; ingestion = $analysis.ingestion_ms; query_p50 = (Percentile $latencies 0.50); query_p95 = (Percentile $latencies 0.95) }
-        memory_bytes = [ordered]@{ peak_java_heap_observed = $analysis.summary.peak_java_memory_bytes; peak_rust_working_set = $peakRustWorkingSet }
+        memory_bytes = [ordered]@{ peak_java_heap_observed = $analysis.summary.resources.peak_memory_bytes; peak_rust_working_set = $peakRustWorkingSet }
         assumptions = @("Generated corpus has no external dependencies", "Query latency includes fresh STDIO process startup", "Peak Java heap is the analyzer's observation", "Results describe this environment only and are not universal performance claims")
     }
     $destination = [IO.Path]::GetFullPath((Join-Path $repo $Output))

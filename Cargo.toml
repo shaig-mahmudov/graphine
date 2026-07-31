@@ -7,13 +7,14 @@ members = [
     "crates/graphine-mcp",
     "crates/graphine-protocol",
     "crates/graphine-query",
+    "crates/graphine-rust-analyzer",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.86"
+rust-version = "1.95"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

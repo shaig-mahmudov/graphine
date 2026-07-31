@@ -1,0 +1,80 @@
+id: rust-core-001
+fixture: rust-core
+category: cargo-workspace
+question: Which Cargo targets and crates are registered in the workspace?
+difficulty: easy
+expected_capabilities: [cargo-workspace, symbol-discovery]
+token_budget: 500
+support: rust-v1
+---
+id: rust-core-002
+fixture: rust-core
+category: trait-implementations
+question: Which type implements Store, and which method implements Store.save?
+difficulty: medium
+expected_capabilities: [implementation-search, compiler-resolution]
+token_budget: 600
+support: rust-v1
+---
+id: rust-core-003
+fixture: rust-core
+category: dynamic-dispatch
+question: What declaration does the trait-object call in dynamic_process target?
+difficulty: hard
+expected_capabilities: [call-graph, trait-dispatch, ambiguity-reporting]
+token_budget: 650
+support: rust-v1
+---
+id: rust-core-004
+fixture: rust-core
+category: field-access
+question: Which fields does MemoryStore.save access?
+difficulty: medium
+expected_capabilities: [field-access]
+token_budget: 500
+support: rust-v1
+---
+id: rust-core-005
+fixture: rust-core
+category: types
+question: Which types are accepted and returned by dynamic_process?
+difficulty: medium
+expected_capabilities: [type-references]
+token_budget: 550
+support: rust-v1
+---
+id: rust-core-006
+fixture: rust-core
+category: macros-and-features
+question: Which declarative macro is invoked by process, and which function is enabled by fancy?
+difficulty: medium
+expected_capabilities: [macro-analysis, cargo-features]
+token_budget: 550
+support: rust-v1
+---
+id: rust-core-007
+fixture: rust-core
+category: tests
+question: Which unit and integration test functions are indexed?
+difficulty: easy
+expected_capabilities: [test-discovery]
+token_budget: 450
+support: rust-v1
+---
+id: rust-core-008
+fixture: rust-core
+category: safe-mode
+question: Does safe analysis execute the workspace build script or local procedural macro?
+difficulty: hard
+expected_capabilities: [safe-mode, uncertainty-reporting]
+token_budget: 500
+support: rust-v1
+---
+id: rust-core-009
+fixture: rust-core
+category: concrete-dispatch
+question: What implementation does the statically typed call in concrete_process target?
+difficulty: hard
+expected_capabilities: [call-graph, trait-dispatch, compiler-resolution]
+token_budget: 550
+support: rust-v1

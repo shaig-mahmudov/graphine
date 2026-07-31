@@ -1,0 +1,31 @@
+{
+  "fixture": "rust-core",
+  "expected": [
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:app/lib/app","kind":"crate"},
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:app/test/flow","kind":"crate"},
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:app/example/demo","kind":"crate"},
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:app/bench/throughput","kind":"crate"},
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:app/custom-build/build-script-build","kind":"crate"},
+    {"question_id":"rust-core-001","category":"cargo_targets","event":"node","stable_id":"crate:local-macro/proc-macro/local_macro","kind":"crate"},
+    {"question_id":"rust-core-002","category":"implementations","event":"edge","source":"type:crate:app/lib/app::crate::MemoryStore","target":"trait:crate:app/lib/app::crate::Store","kind":"IMPLEMENTS"},
+    {"question_id":"rust-core-002","category":"implementations","event":"edge","source":"method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()","target":"method:crate:app/lib/app::crate::Store#save()","kind":"IMPLEMENTS_METHOD"},
+    {"question_id":"rust-core-003","category":"dynamic_dispatch","event":"edge","source":"function:crate:app/lib/app::crate::dynamic_process()","target":"method:crate:app/lib/app::crate::Store#save()","kind":"CALLS"},
+    {"question_id":"rust-core-004","category":"field_access","event":"edge","source":"method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()","target":"field:crate:app/lib/app::crate::MemoryStore#writes","kind":"WRITES_FIELD"},
+    {"question_id":"rust-core-004","category":"field_access","event":"edge","source":"method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()","target":"field:crate:app/lib/app::crate::MemoryStore#writes","kind":"READS_FIELD"},
+    {"question_id":"rust-core-005","category":"types","event":"edge","source":"function:crate:app/lib/app::crate::dynamic_process()","target":"trait:crate:app/lib/app::crate::Store","kind":"ACCEPTS_TYPE"},
+    {"question_id":"rust-core-005","category":"types","event":"edge","source":"function:crate:app/lib/app::crate::dynamic_process()","target":"type:crate:app/lib/app::crate::Event","kind":"RETURNS_TYPE"},
+    {"question_id":"rust-core-005","category":"types","event":"edge","source":"function:crate:app/lib/app::crate::dynamic_process()","target":"type:crate:support/lib/support::crate::Identifier","kind":"RETURNS_TYPE"},
+    {"question_id":"rust-core-006","category":"macros_and_features","event":"edge","source":"function:crate:app/lib/app::crate::process()","target":"macro:crate:app/lib/app::crate::tracked","kind":"INVOKES_MACRO"},
+    {"question_id":"rust-core-006","category":"macros_and_features","event":"edge","source":"function:crate:app/lib/app::crate::process()","target":"function:crate:support/lib/support::crate::normalize()","kind":"CALLS"},
+    {"question_id":"rust-core-006","category":"macros_and_features","event":"node","stable_id":"function:crate:app/lib/app::crate::feature_only()","kind":"function"},
+    {"question_id":"rust-core-007","category":"tests","event":"node","stable_id":"function:crate:app/lib/app::crate::tests::stores_an_event()","kind":"function"},
+    {"question_id":"rust-core-007","category":"tests","event":"node","stable_id":"function:crate:app/test/flow::crate::integration_flow()","kind":"function"},
+    {"question_id":"rust-core-008","category":"safe_mode","event":"diagnostic","kind":"build_script_disabled"},
+    {"question_id":"rust-core-008","category":"safe_mode","event":"diagnostic","kind":"procedural_macro_disabled"},
+    {"question_id":"rust-core-009","category":"concrete_dispatch","event":"edge","source":"function:crate:app/lib/app::crate::concrete_process()","target":"method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()","kind":"CALLS"}
+  ],
+  "forbidden": [
+    {"question_id":"rust-core-003","category":"dynamic_dispatch","event":"edge","source":"function:crate:app/lib/app::crate::dynamic_process()","target":"method:crate:app/lib/app::crate::MemoryStore as crate:app/lib/app::crate::Store#save()","kind":"CALLS"}
+  ],
+  "unsupported_questions": []
+}

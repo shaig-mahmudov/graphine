@@ -1,0 +1,74 @@
+{
+  "fixture": "rust-core",
+  "precision": 1.0,
+  "recall": 1.0,
+  "true_positives": 22,
+  "false_positives": [],
+  "false_negatives": [],
+  "unsupported_claims": [],
+  "question_results": [
+    {
+      "question_id": "rust-core-001",
+      "category": "cargo_targets",
+      "status": "passed",
+      "matched": 6,
+      "expected": 6
+    },
+    {
+      "question_id": "rust-core-002",
+      "category": "implementations",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "rust-core-003",
+      "category": "dynamic_dispatch",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    },
+    {
+      "question_id": "rust-core-004",
+      "category": "field_access",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "rust-core-005",
+      "category": "types",
+      "status": "passed",
+      "matched": 3,
+      "expected": 3
+    },
+    {
+      "question_id": "rust-core-006",
+      "category": "macros_and_features",
+      "status": "passed",
+      "matched": 3,
+      "expected": 3
+    },
+    {
+      "question_id": "rust-core-007",
+      "category": "tests",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "rust-core-008",
+      "category": "safe_mode",
+      "status": "passed",
+      "matched": 2,
+      "expected": 2
+    },
+    {
+      "question_id": "rust-core-009",
+      "category": "concrete_dispatch",
+      "status": "passed",
+      "matched": 1,
+      "expected": 1
+    }
+  ]
+}

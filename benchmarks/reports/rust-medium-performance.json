@@ -1,0 +1,44 @@
+{
+    "report_version":  1,
+    "generated_at":  "2026-07-31T09:24:10.1221786Z",
+    "environment":  {
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "rust":  "rustc 1.96.0 (ac68faa20 2026-05-25)",
+                        "cargo":  "cargo 1.96.0 (30a34c682 2026-05-25)"
+                    },
+    "corpus":  {
+                   "generator":  "benchmark-core generate-rust-medium",
+                   "module_count":  250,
+                   "file_count":  251,
+                   "source_lines":  4506
+               },
+    "graph":  {
+                  "node_count":  1254,
+                  "edge_count":  2253,
+                  "occurrence_count":  2252,
+                  "database_bytes":  6000640
+              },
+    "timing_ms":  {
+                      "end_to_end_analysis":  4467,
+                      "worker_total":  2327,
+                      "ingestion":  1903,
+                      "query_p50":  17,
+                      "query_p95":  19
+                  },
+    "resources":  {
+                      "diagnostics":  250,
+                      "source_bytes":  74090
+                  },
+    "capabilities":  {
+                         "cargo_safe_mode":  true,
+                         "cargo_trusted_mode":  false,
+                         "rust_semantics":  true
+                     },
+    "assumptions":  [
+                        "Generated Cargo corpus has no external dependencies or build script",
+                        "Safe mode is offline and does not execute project code",
+                        "Query latency includes fresh STDIO process startup",
+                        "Results describe this environment only and are not universal performance claims"
+                    ]
+}

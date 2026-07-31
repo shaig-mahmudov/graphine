@@ -4,9 +4,11 @@ use graphine_analyzer_client::{AnalyzerClient, AnalyzerJarDiscovery, Cancellatio
 use graphine_index::Database;
 use graphine_mcp::{McpServer, run_stdio};
 use graphine_protocol::{
+    ANALYZER_CAPABILITY_CARGO_SAFE_MODE, ANALYZER_CAPABILITY_CARGO_TRUSTED_MODE,
     ANALYZER_CAPABILITY_JAVA_SEMANTICS, ANALYZER_CAPABILITY_MAVEN_TRUSTED_MODE,
-    ANALYZER_CAPABILITY_SPRING_STATIC_SEMANTICS, ANALYZER_PROTOCOL_VERSION, AnalyzerHello,
-    AnalyzerMode, GraphineConfig, GraphineError, SyntheticGraph,
+    ANALYZER_CAPABILITY_RUST_SEMANTICS, ANALYZER_CAPABILITY_SPRING_STATIC_SEMANTICS,
+    ANALYZER_PROTOCOL_VERSION, AnalyzerHello, AnalyzerMode, CargoAnalysisOptions, GraphineConfig,
+    GraphineError, ProjectLanguage, SyntheticGraph,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -19,7 +21,7 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "graphine",
     version,
-    about = "Local-first Java/Spring graph foundation"
+    about = "Local-first Java/Spring and Rust semantic graph"
 )]
 struct Cli {
     /// JSON configuration file. Defaults are safe and local-only.
@@ -39,6 +41,8 @@ enum Command {
         path: PathBuf,
         #[arg(long)]
         name: Option<String>,
+        #[arg(long, value_enum, default_value_t = CliProjectLanguage::Auto)]
+        language: CliProjectLanguage,
     },
     /// Unregister a project and remove its local graph data.
     Unregister { project: String },
@@ -62,13 +66,21 @@ enum Command {
     },
     /// Run the MCP server over STDIO.
     Serve,
-    /// Explicitly analyze a registered Maven project with Eclipse JDT.
+    /// Analyze a registered project with its persisted language backend.
     Analyze {
         project: String,
         #[arg(long, value_enum, default_value_t = CliAnalyzerMode::Safe)]
         mode: CliAnalyzerMode,
         #[arg(long)]
         allow_partial: bool,
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+        #[arg(long)]
+        all_features: bool,
+        #[arg(long)]
+        no_default_features: bool,
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Inspect the standalone analyzer worker.
     Analyzer {
@@ -91,6 +103,28 @@ enum CliAnalyzerMode {
     Trusted,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliProjectLanguage {
+    Auto,
+    Java,
+    Rust,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliLanguage {
+    Java,
+    Rust,
+}
+
+impl From<CliLanguage> for ProjectLanguage {
+    fn from(value: CliLanguage) -> Self {
+        match value {
+            CliLanguage::Java => Self::Java,
+            CliLanguage::Rust => Self::Rust,
+        }
+    }
+}
+
 impl From<CliAnalyzerMode> for AnalyzerMode {
     fn from(value: CliAnalyzerMode) -> Self {
         match value {
@@ -102,8 +136,14 @@ impl From<CliAnalyzerMode> for AnalyzerMode {
 
 #[derive(Debug, Subcommand)]
 enum AnalyzerCommand {
-    Doctor,
-    Version,
+    Doctor {
+        #[arg(long, value_enum, default_value_t = CliLanguage::Java)]
+        language: CliLanguage,
+    },
+    Version {
+        #[arg(long, value_enum, default_value_t = CliLanguage::Java)]
+        language: CliLanguage,
+    },
 }
 
 #[allow(clippy::too_many_lines)]
@@ -117,17 +157,24 @@ fn main() -> Result<()> {
     init_tracing(&config.log_level)?;
     let database_path = config.data_dir.join("graphine.sqlite3");
     match cli.command {
-        Command::Register { path, name } => {
+        Command::Register {
+            path,
+            name,
+            language,
+        } => {
+            let language = detect_project_language(&path, language)?;
             let database = Database::open(&database_path, config.sqlite_timeout_ms)?;
             let project = database.register_project(
                 &path,
                 name.as_deref(),
+                language,
                 &config.allowed_repository_roots,
             )?;
             print_json(&json!({
                 "project_id": project.id,
                 "display_name": project.display_name,
                 "canonical_root": project.canonical_root,
+                "language": project.language,
                 "registered_at_ms": project.registered_at_ms,
             }))?;
         }
@@ -146,6 +193,7 @@ fn main() -> Result<()> {
                         "project_id": project.id,
                         "display_name": project.display_name,
                         "canonical_root": project.canonical_root,
+                        "language": project.language,
                         "schema_version": project.schema_version,
                         "analyzer_version": project.analyzer_version,
                     })
@@ -159,6 +207,8 @@ fn main() -> Result<()> {
             print_json(&json!({
                 "project": status.project.display_name,
                 "project_id": status.project.id,
+                "language": status.project.language,
+                "analyzer_name": status.analyzer_name,
                 "state": status.state,
                 "active_generation": status.active_generation,
                 "stale": status.stale,
@@ -175,28 +225,75 @@ fn main() -> Result<()> {
         }
         Command::Doctor => {
             let database = Database::open(&database_path, config.sqlite_timeout_ms)?;
+            let projects = database.list_projects()?;
+            let java_in_use = projects
+                .iter()
+                .any(|project| project.language == ProjectLanguage::Java);
+            let rust_in_use = projects
+                .iter()
+                .any(|project| project.language == ProjectLanguage::Rust);
             let java_version = executable_version(&config.java_executable, &["-version"]);
             let maven_available = executable_available(&config.maven_executable);
+            let cargo_version = executable_version(&config.cargo_executable, &["--version"]);
+            let rustc_version = executable_version(&config.rustc_executable, &["--version"]);
             let client = AnalyzerClient::from_config(&config);
-            let discovery = client.discovery();
-            let metadata = client.metadata();
-            let analyzer_error = metadata.as_ref().err().map(GraphineError::code);
-            let analyzer_status = analyzer_status(discovery, metadata.as_ref().ok());
-            let protocol_compatible = metadata
+            let java_discovery = client.discovery_for(ProjectLanguage::Java);
+            let java_metadata = client.metadata_for(ProjectLanguage::Java);
+            let java_analyzer_error = java_metadata.as_ref().err().map(GraphineError::code);
+            let java_analyzer_status = analyzer_status(java_discovery, java_metadata.as_ref().ok());
+            let java_protocol_compatible = java_metadata
                 .as_ref()
                 .is_ok_and(|value| value.protocol_version == ANALYZER_PROTOCOL_VERSION);
             let capabilities = derive_doctor_capabilities(
                 java_version.is_some(),
                 maven_available,
-                protocol_compatible,
-                metadata.as_ref().ok(),
+                java_protocol_compatible,
+                java_metadata.as_ref().ok(),
             );
-            let degraded_reasons = degraded_reasons(
-                java_version.is_some(),
-                discovery,
-                metadata.as_ref(),
-                capabilities,
-            );
+            let rust_discovery = client.discovery_for(ProjectLanguage::Rust);
+            let rust_metadata = client.metadata_for(ProjectLanguage::Rust);
+            let rust_protocol_compatible = rust_metadata
+                .as_ref()
+                .is_ok_and(|value| value.protocol_version == ANALYZER_PROTOCOL_VERSION);
+            let rust_semantics = rustc_version.is_some()
+                && cargo_version.is_some()
+                && rust_protocol_compatible
+                && rust_metadata.as_ref().ok().is_some_and(|metadata| {
+                    metadata
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == ANALYZER_CAPABILITY_RUST_SEMANTICS)
+                });
+            let mut degraded_reasons = Vec::<String>::new();
+            if java_in_use {
+                degraded_reasons.extend(
+                    degraded_reasons_for_java(
+                        java_version.is_some(),
+                        java_discovery,
+                        java_metadata.as_ref(),
+                        capabilities,
+                    )
+                    .into_iter()
+                    .map(str::to_owned),
+                );
+            }
+            if rust_in_use {
+                if rustc_version.is_none() {
+                    degraded_reasons.push("rustc_unavailable".to_owned());
+                }
+                if cargo_version.is_none() {
+                    degraded_reasons.push("cargo_unavailable".to_owned());
+                }
+                if !rust_discovery.available {
+                    degraded_reasons.push("rust_analyzer_missing".to_owned());
+                } else if rust_metadata.is_err() {
+                    degraded_reasons.push("rust_analyzer_metadata_unavailable".to_owned());
+                } else if !rust_protocol_compatible {
+                    degraded_reasons.push("rust_analyzer_protocol_mismatch".to_owned());
+                } else if !rust_semantics {
+                    degraded_reasons.push("rust_semantics_capability_missing".to_owned());
+                }
+            }
             print_json(&json!({
                 "status": if degraded_reasons.is_empty() { "ok" } else { "degraded" },
                 "degraded_reasons": degraded_reasons,
@@ -205,22 +302,42 @@ fn main() -> Result<()> {
                     "path": database_path,
                     "schema_version": graphine_protocol::SCHEMA_VERSION
                 },
-                "registered_projects": database.list_projects()?.len(),
+                "registered_projects": projects.len(),
                 "transport": config.mcp_transport,
                 "java": {"available": java_version.is_some(), "version": java_version},
                 "analyzer": {
-                    "status": analyzer_status,
-                    "discovered": discovery.available,
-                    "available": protocol_compatible,
-                    "version": metadata.as_ref().ok().map(|value| &value.analyzer_version),
-                    "protocol_version": metadata.as_ref().ok().map(|value| value.protocol_version),
+                    "status": java_analyzer_status,
+                    "discovered": java_discovery.available,
+                    "available": java_protocol_compatible,
+                    "version": java_metadata.as_ref().ok().map(|value| &value.analyzer_version),
+                    "protocol_version": java_metadata.as_ref().ok().map(|value| value.protocol_version),
                     "expected_protocol_version": ANALYZER_PROTOCOL_VERSION,
-                    "protocol_compatible": protocol_compatible,
-                    "reported_capabilities": metadata.as_ref().ok().map(|value| &value.capabilities),
-                    "error": analyzer_error,
-                    "jar": discovery.path,
-                    "source": discovery.source,
-                    "searched": discovery.searched,
+                    "protocol_compatible": java_protocol_compatible,
+                    "reported_capabilities": java_metadata.as_ref().ok().map(|value| &value.capabilities),
+                    "error": java_analyzer_error,
+                    "jar": java_discovery.path,
+                    "source": java_discovery.source,
+                    "searched": java_discovery.searched,
+                },
+                "languages": {
+                    "java": {
+                        "in_use": java_in_use,
+                        "toolchain_available": java_version.is_some(),
+                        "worker_status": java_analyzer_status,
+                        "worker": java_metadata.as_ref().ok(),
+                        "worker_path": java_discovery.path,
+                    },
+                    "rust": {
+                        "in_use": rust_in_use,
+                        "cargo": {"available":cargo_version.is_some(),"version":cargo_version},
+                        "rustc": {"available":rustc_version.is_some(),"version":rustc_version},
+                        "worker_status": analyzer_status(rust_discovery, rust_metadata.as_ref().ok()),
+                        "worker": rust_metadata.as_ref().ok(),
+                        "worker_path": rust_discovery.path,
+                        "rust_semantics": rust_semantics,
+                        "safe_mode_supported": rust_metadata.as_ref().ok().is_some_and(|metadata| metadata.capabilities.iter().any(|capability| capability == ANALYZER_CAPABILITY_CARGO_SAFE_MODE)),
+                        "trusted_mode_supported": rust_metadata.as_ref().ok().is_some_and(|metadata| metadata.capabilities.iter().any(|capability| capability == ANALYZER_CAPABILITY_CARGO_TRUSTED_MODE)),
+                    }
                 },
                 "maven": {
                     "available": maven_available,
@@ -235,6 +352,7 @@ fn main() -> Result<()> {
                     "spring_semantics": capabilities.spring_static_semantics,
                     "spring_static_semantics": capabilities.spring_static_semantics,
                     "maven_trusted_mode": capabilities.maven_trusted_mode.available,
+                    "rust_semantics": rust_semantics,
                     "gradle": false
                 },
                 "unsupported": ["gradle"]
@@ -281,20 +399,36 @@ fn main() -> Result<()> {
             project,
             mode,
             allow_partial,
+            features,
+            all_features,
+            no_default_features,
+            target,
         } => {
             let mut database = Database::open(&database_path, config.sqlite_timeout_ms)?;
             let client = AnalyzerClient::from_config(&config);
-            let outcome = client.analyze_and_ingest(
+            let outcome = client.analyze_and_ingest_with_options(
                 &mut database,
                 &project,
                 mode.into(),
                 allow_partial || config.allow_partial_activation,
+                CargoAnalysisOptions {
+                    features,
+                    all_features,
+                    no_default_features,
+                    target,
+                },
                 &CancellationToken::default(),
             )?;
             print_json(&json!({
                 "project": project,
                 "generation": outcome.generation,
+                "language": outcome.language,
+                "analyzer_name": outcome.analyzer_name,
                 "analyzer_version": outcome.analyzer_version,
+                "mode": match mode { CliAnalyzerMode::Safe => "safe", CliAnalyzerMode::Trusted => "trusted" },
+                "trust_warning": matches!(mode, CliAnalyzerMode::Trusted).then_some(
+                    "Trusted analysis may execute build-tool extensions, build scripts, and procedural macros with the user's OS permissions."
+                ),
                 "partial": outcome.partial,
                 "diagnostics": outcome.diagnostics,
                 "worker_round_trip_ms": outcome.worker_round_trip_ms,
@@ -305,33 +439,45 @@ fn main() -> Result<()> {
         Command::Analyzer { command } => {
             let client = AnalyzerClient::from_config(&config);
             match command {
-                AnalyzerCommand::Doctor => {
-                    let discovery = client.discovery();
-                    let metadata = client.metadata();
+                AnalyzerCommand::Doctor { language } => {
+                    let language: ProjectLanguage = language.into();
+                    let discovery = client.discovery_for(language);
+                    let metadata = client.metadata_for(language);
                     let status = analyzer_status(discovery, metadata.as_ref().ok());
                     let protocol_compatible = metadata
                         .as_ref()
                         .is_ok_and(|value| value.protocol_version == ANALYZER_PROTOCOL_VERSION);
                     print_json(&json!({
                         "status": status,
+                        "language": language,
                         "available": protocol_compatible,
+                        "analyzer_name": metadata.as_ref().ok().map(|value| &value.analyzer_name),
                         "worker": metadata.as_ref().ok().map(|value| &value.analyzer_version),
                         "protocol_version": metadata.as_ref().ok().map(|value| value.protocol_version),
                         "expected_protocol_version": ANALYZER_PROTOCOL_VERSION,
                         "protocol_compatible": protocol_compatible,
                         "capabilities": metadata.as_ref().ok().map(|value| &value.capabilities),
                         "error": metadata.as_ref().err().map(GraphineError::code),
-                        "jar": discovery.path,
+                        "worker_path": discovery.path,
                         "source": discovery.source,
                         "searched": discovery.searched,
                         "action": match status {
                             "ok" => Value::Null,
                             "protocol_mismatch" => json!("install an analyzer built for the expected protocol version"),
-                            _ => json!("set analyzer_jar/GRAPHINE_ANALYZER_JAR or install graphine-analyzer.jar beside the executable or under lib/")
+                            _ => match language {
+                                ProjectLanguage::Java => json!("set java_analyzer_jar (analyzer_jar remains an alias) or GRAPHINE_ANALYZER_JAR"),
+                                ProjectLanguage::Rust => json!("set rust_analyzer_worker or GRAPHINE_RUST_ANALYZER, or install graphine-rust-analyzer beside graphine"),
+                            }
                         }
                     }))?;
                 }
-                AnalyzerCommand::Version => print_json(&json!({"worker":client.version()?}))?,
+                AnalyzerCommand::Version { language } => {
+                    let language: ProjectLanguage = language.into();
+                    print_json(&json!({
+                        "language":language,
+                        "worker":client.version_for(language)?
+                    }))?;
+                }
             }
         }
         Command::Diagnostics { project } => {
@@ -340,6 +486,36 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn detect_project_language(path: &Path, requested: CliProjectLanguage) -> Result<ProjectLanguage> {
+    let has_java = path.join("pom.xml").is_file();
+    let has_rust = path.join("Cargo.toml").is_file();
+    match requested {
+        CliProjectLanguage::Auto => match (has_java, has_rust) {
+            (true, false) => Ok(ProjectLanguage::Java),
+            (false, true) => Ok(ProjectLanguage::Rust),
+            (true, true) => Err(GraphineError::InvalidArgument(
+                "both pom.xml and Cargo.toml exist; pass --language java or --language rust"
+                    .to_owned(),
+            )
+            .into()),
+            (false, false) => Err(GraphineError::InvalidArgument(
+                "project root must contain pom.xml or Cargo.toml".to_owned(),
+            )
+            .into()),
+        },
+        CliProjectLanguage::Java if has_java => Ok(ProjectLanguage::Java),
+        CliProjectLanguage::Rust if has_rust => Ok(ProjectLanguage::Rust),
+        CliProjectLanguage::Java => Err(GraphineError::InvalidArgument(
+            "Java registration requires a root pom.xml".to_owned(),
+        )
+        .into()),
+        CliProjectLanguage::Rust => Err(GraphineError::InvalidArgument(
+            "Rust registration requires a root Cargo.toml".to_owned(),
+        )
+        .into()),
+    }
 }
 
 fn init_tracing(level: &str) -> Result<()> {
@@ -469,7 +645,7 @@ fn analyzer_status(
     }
 }
 
-fn degraded_reasons(
+fn degraded_reasons_for_java(
     java_available: bool,
     discovery: &AnalyzerJarDiscovery,
     metadata: Result<&AnalyzerHello, &GraphineError>,
@@ -514,7 +690,9 @@ mod tests {
     fn metadata(protocol_version: u32, capabilities: &[&str]) -> AnalyzerHello {
         AnalyzerHello {
             protocol_version,
+            analyzer_name: "graphine-java-jdt".to_owned(),
             analyzer_version: "test".to_owned(),
+            language: ProjectLanguage::Java,
             capabilities: capabilities
                 .iter()
                 .map(|capability| (*capability).to_owned())
@@ -588,5 +766,22 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn registration_language_auto_detects_rust_and_requires_matching_manifests() {
+        let rust = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/rust-core");
+        assert_eq!(
+            detect_project_language(&rust, CliProjectLanguage::Auto).unwrap(),
+            ProjectLanguage::Rust
+        );
+        assert!(detect_project_language(&rust, CliProjectLanguage::Java).is_err());
+        let empty = std::env::temp_dir().join(format!(
+            "graphine-language-detection-empty-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&empty).unwrap();
+        assert!(detect_project_language(&empty, CliProjectLanguage::Auto).is_err());
+        fs::remove_dir_all(empty).unwrap();
     }
 }

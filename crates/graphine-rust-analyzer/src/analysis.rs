@@ -2821,7 +2821,11 @@ fn line_number(text: &str, offset: usize) -> u32 {
 }
 
 fn relative_slash(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical_path
+        .strip_prefix(&canonical_root)
+        .or_else(|_| path.strip_prefix(root))
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")

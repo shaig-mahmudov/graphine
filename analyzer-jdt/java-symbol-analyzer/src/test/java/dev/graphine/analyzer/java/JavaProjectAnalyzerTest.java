@@ -46,7 +46,7 @@ final class JavaProjectAnalyzerTest {
                 """);
         ProjectModel model = new ProjectModel(root, List.of(root),
                 List.of(new SourceRoot(sourceRoot, "main", "fixture", root)), List.of(), "17", "test", 0);
-        AnalysisRequest request = new AnalysisRequest(1, "test", "analyze_project", root, AnalyzerMode.safe,
+        AnalysisRequest request = new AnalysisRequest(2, "test", "analyze_project", root, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, List.of()), Path.of("mvn"), 10_000);
         ObjectMapper mapper = new ObjectMapper();
         StringWriter output = new StringWriter();
@@ -84,7 +84,7 @@ final class JavaProjectAnalyzerTest {
         ProjectModel model = new ProjectModel(project, List.of(project),
                 List.of(new SourceRoot(project.resolve("src/main/java"), "main", "recover", project)),
                 List.of(), "17", "test", 0);
-        AnalysisRequest request = new AnalysisRequest(1, "recover", "analyze_project", project, AnalyzerMode.safe,
+        AnalysisRequest request = new AnalysisRequest(2, "recover", "analyze_project", project, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, List.of()), Path.of("mvn"), 10_000);
         StringWriter output = new StringWriter();
 
@@ -113,7 +113,7 @@ final class JavaProjectAnalyzerTest {
         ProjectModel model = new ProjectModel(project, List.of(project),
                 List.of(new SourceRoot(project.resolve("src/main/java"), "main", "ambiguous", project)),
                 List.of(), "17", "test", 0);
-        AnalysisRequest request = new AnalysisRequest(1, "ambiguous", "analyze_project", project, AnalyzerMode.safe,
+        AnalysisRequest request = new AnalysisRequest(2, "ambiguous", "analyze_project", project, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, List.of()), Path.of("mvn"), 10_000);
         StringWriter output = new StringWriter();
 
@@ -150,7 +150,7 @@ final class JavaProjectAnalyzerTest {
         Path project = root.resolve("spring");
         ProjectModel model = new ProjectModel(project, List.of(project),
                 List.of(new SourceRoot(sourceRoot, "main", "spring", project)), List.of(), "17", "test", 0);
-        AnalysisRequest request = new AnalysisRequest(1, "spring", "analyze_project", project, AnalyzerMode.safe,
+        AnalysisRequest request = new AnalysisRequest(2, "spring", "analyze_project", project, AnalyzerMode.safe,
                 List.of("main"), new AnalyzerOptions(true, true, false, List.of()), Path.of("mvn"), 10_000);
         StringWriter output = new StringWriter();
 

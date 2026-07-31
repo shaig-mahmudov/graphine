@@ -35,7 +35,7 @@ public final class MavenProjectResolver {
     private static final int MAX_MODEL_DEPTH = 24;
     private static final int MAX_DEPENDENCIES = 2_048;
     private static final String ANALYZER_VERSION = "graphine-analyzer 0.1.0";
-    private static final String PROTOCOL_VERSION = "1";
+    private static final String PROTOCOL_VERSION = "2";
 
     public ProjectModel resolve(AnalysisRequest request, Consumer<Diagnostic> diagnostics) throws Exception {
         Path root = canonical(request.projectRoot());

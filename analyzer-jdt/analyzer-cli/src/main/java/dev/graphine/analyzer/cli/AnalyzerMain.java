@@ -23,7 +23,7 @@ import java.util.Map;
 
 public final class AnalyzerMain {
     public static final String VERSION = "0.1.0";
-    private static final int PROTOCOL_VERSION = 1;
+    private static final int PROTOCOL_VERSION = 2;
     private static final int REQUEST_LIMIT = 1_048_576;
 
     private AnalyzerMain() {}
@@ -46,15 +46,18 @@ public final class AnalyzerMain {
             AnalysisRequest request = mapper.readValue(line, AnalysisRequest.class);
             request.validate();
             writer.emit("analysis_started", Map.of("protocol_version", PROTOCOL_VERSION,
-                    "request_id", request.requestId(), "analyzer_version", VERSION));
+                    "request_id", request.requestId(), "analyzer_name", "graphine-java-jdt", "language", "java",
+                    "analyzer_version", VERSION));
             List<Diagnostic> resolverDiagnostics = new ArrayList<>();
             ProjectModel model = new MavenProjectResolver().resolve(request, resolverDiagnostics::add);
             writer.emit("project_metadata", Map.of(
+                    "language", "java",
                     "fingerprint", model.fingerprint(),
-                    "java_release", model.javaRelease(),
-                    "classpath_resolution_ms", model.classpathResolutionMs(),
-                    "capabilities", packagedCapabilities(),
-                    "modules", model.moduleRoots().stream().map(path -> path.getFileName().toString()).toList()));
+                    "modules", model.moduleRoots().stream().map(path -> path.getFileName().toString()).toList(),
+                    "configuration", Map.of(
+                            "java_release", model.javaRelease(),
+                            "classpath_resolution_ms", model.classpathResolutionMs(),
+                            "capabilities", packagedCapabilities())));
             for (var entry : model.sourceRoots().stream().collect(java.util.stream.Collectors.groupingBy(SourceRoot::moduleName)).entrySet()) {
                 SourceRoot first = entry.getValue().get(0);
                 String moduleRoot = model.root().relativize(first.moduleRoot()).toString().replace('\\', '/');
@@ -66,12 +69,12 @@ public final class AnalyzerMain {
             AnalysisResult result = new JavaProjectAnalyzer().analyze(model, request, writer);
             for (Diagnostic diagnostic : resolverDiagnostics) writer.emit("diagnostic", "diagnostic", diagnostic);
             AnalysisSummary original = result.summary();
-            AnalysisSummary summary = new AnalysisSummary(original.filesDiscovered(), original.filesParsed(),
+            AnalysisSummary summary = new AnalysisSummary("java",
+                    original.filesDiscovered(), original.filesParsed(),
                     original.filesFailed(), original.bindingsResolved(),
                     original.bindingsUnresolved() + resolverDiagnostics.size(), original.nodesEmitted(),
-                    original.edgesEmitted(), original.durationMs(), original.classpathResolutionMs(),
-                    original.parsingMs(), original.springSemanticMs(), original.serializationMs(),
-                    original.peakJavaMemoryBytes(), original.capabilities(), result.status());
+                    original.edgesEmitted(), original.durationMs(), original.capabilities(),
+                    original.timingsMs(), original.resources(), original.configuration(), result.status());
             writer.emit("analysis_summary", "summary", summary);
             writer.emit("analysis_completed", Map.of("status", result.status()));
         } catch (Exception error) {
@@ -90,7 +93,9 @@ public final class AnalyzerMain {
                 .toList();
         return Map.of(
                 "protocol_version", PROTOCOL_VERSION,
+                "analyzer_name", "graphine-java-jdt",
                 "analyzer_version", VERSION,
+                "language", "java",
                 "capabilities", capabilities);
     }
 

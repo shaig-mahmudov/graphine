@@ -12,7 +12,9 @@ class AnalyzerMainTest {
     @Test
     void metadataDescribesThePackagedAnalyzerWithoutStartingAnalysis() {
         Map<String, Object> metadata = AnalyzerMain.metadata();
-        assertEquals(1, metadata.get("protocol_version"));
+        assertEquals(2, metadata.get("protocol_version"));
+        assertEquals("graphine-java-jdt", metadata.get("analyzer_name"));
+        assertEquals("java", metadata.get("language"));
         assertEquals(AnalyzerMain.VERSION, metadata.get("analyzer_version"));
 
         @SuppressWarnings("unchecked")

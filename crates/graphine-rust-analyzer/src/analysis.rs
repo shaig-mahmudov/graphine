@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -392,6 +394,8 @@ fn run_trusted_cargo_check(root: &Path, request: &AnalyzeProjectRequest) -> Resu
     if let Some(target) = &request.cargo.target {
         command.arg("--target").arg(target);
     }
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .spawn()
         .context("failed to start trusted Cargo check")?;
@@ -435,46 +439,14 @@ fn terminate_descendant_tree(child: &mut Child) {
 
 #[cfg(unix)]
 fn terminate_descendant_tree(child: &mut Child) {
-    let root = child.id();
-    let descendants = Command::new("ps")
-        .args(["-eo", "pid=,ppid="])
-        .output()
-        .ok()
-        .map(|output| descendant_processes(root, &String::from_utf8_lossy(&output.stdout)))
-        .unwrap_or_default();
+    let process_id = child.id();
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{process_id}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let _ = child.kill();
-    if !descendants.is_empty() {
-        let mut command = Command::new("kill");
-        command.arg("-KILL").arg("--");
-        for process_id in descendants.into_iter().rev() {
-            command.arg(process_id.to_string());
-        }
-        let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
-    }
     let _ = child.wait();
-}
-
-#[cfg(unix)]
-fn descendant_processes(root: u32, process_table: &str) -> Vec<u32> {
-    let mut children = HashMap::<u32, Vec<u32>>::new();
-    for line in process_table.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(process_id), Some(parent_id)) = (fields.next(), fields.next()) else {
-            continue;
-        };
-        if let (Ok(process_id), Ok(parent_id)) = (process_id.parse(), parent_id.parse()) {
-            children.entry(parent_id).or_default().push(process_id);
-        }
-    }
-    let mut descendants = Vec::new();
-    let mut pending = vec![root];
-    while let Some(parent) = pending.pop() {
-        if let Some(processes) = children.get(&parent) {
-            descendants.extend(processes);
-            pending.extend(processes);
-        }
-    }
-    descendants
 }
 
 fn cargo_targets(root: &Path, request: &AnalyzeProjectRequest) -> Result<Vec<TargetInfo>> {

@@ -6,12 +6,13 @@ $stage = Join-Path $output "graphine"
 
 Push-Location $repo
 try {
-    & cargo build --release -p graphine-cli
+    & cargo build --release -p graphine-cli -p graphine-rust-analyzer
     if ($LASTEXITCODE -ne 0) { throw "Rust release build failed" }
     & mvn.cmd -q -f analyzer-jdt/pom.xml package
     if ($LASTEXITCODE -ne 0) { throw "Analyzer package failed" }
     New-Item -ItemType Directory -Force (Join-Path $stage "lib") | Out-Null
     Copy-Item -Force "target/release/graphine.exe" (Join-Path $stage "graphine.exe")
+    Copy-Item -Force "target/release/graphine-rust-analyzer.exe" (Join-Path $stage "graphine-rust-analyzer.exe")
     Copy-Item -Force "analyzer-jdt/analyzer-cli/target/graphine-analyzer.jar" (Join-Path $stage "lib/graphine-analyzer.jar")
     $archive = Join-Path $output "graphine-windows-x86_64.zip"
     Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force

@@ -52,8 +52,8 @@ try {
         environment = [ordered]@{ os = [Environment]::OSVersion.VersionString; architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString(); rust = (& rustc --version) }
         corpus = [ordered]@{ generator = "benchmark-core generate-spring-medium"; controller_count = $Controllers; expected_route_count = $Controllers; file_count = $files.Count; source_lines = $sourceLines }
         graph = [ordered]@{ node_count = $status.node_count; edge_count = $status.edge_count; occurrence_count = $status.occurrence_count; database_bytes = (Get-Item -LiteralPath $database).Length }
-        timing_ms = [ordered]@{ end_to_end_analysis = $watch.ElapsedMilliseconds; java_analysis = $analysis.summary.parsing_ms; spring_semantic_pass = $analysis.summary.spring_semantic_ms; protocol_serialization = $analysis.summary.serialization_ms; rust_ingestion = $analysis.ingestion_ms; endpoint_context_preparation_p50 = (Percentile $latencies 0.50); endpoint_context_preparation_p95 = (Percentile $latencies 0.95) }
-        memory_bytes = [ordered]@{ peak_java_heap_observed = $analysis.summary.peak_java_memory_bytes }
+        timing_ms = [ordered]@{ end_to_end_analysis = $watch.ElapsedMilliseconds; java_analysis = $analysis.summary.timings_ms.parsing; spring_semantic_pass = $analysis.summary.timings_ms.spring_semantic; protocol_serialization = $analysis.summary.timings_ms.serialization; rust_ingestion = $analysis.ingestion_ms; endpoint_context_preparation_p50 = (Percentile $latencies 0.50); endpoint_context_preparation_p95 = (Percentile $latencies 0.95) }
+        memory_bytes = [ordered]@{ peak_java_heap_observed = $analysis.summary.resources.peak_memory_bytes }
         capabilities = $analysis.summary.capabilities
         assumptions = @("Generated Spring-shaped corpus uses canonical source annotation stubs and no external dependencies", "Endpoint-context timing uses the Phase 4 get_endpoint_context tool", "Query latency includes fresh STDIO process startup", "Results describe this environment only")
     }

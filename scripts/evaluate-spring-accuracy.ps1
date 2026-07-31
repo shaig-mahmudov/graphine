@@ -13,7 +13,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "benchmark build failed" }
     foreach ($fixture in @("spring-web", "spring-beans", "spring-data")) {
         $project = [IO.Path]::GetFullPath((Join-Path $repo "fixtures/$fixture"))
-        $request = @{protocol_version=1;request_id="accuracy-$fixture";operation="analyze_project";project_root=$project;mode="safe";source_sets=@("main");options=@{include_method_bodies=$true;include_field_access=$true;include_tests=$false;explicit_classpath=@()};maven_executable="mvn.cmd";timeout_ms=120000} | ConvertTo-Json -Depth 5 -Compress
+        $request = @{protocol_version=2;request_id="accuracy-$fixture";operation="analyze_project";language="java";project_root=$project;mode="safe";source_sets=@("main");options=@{include_method_bodies=$true;include_field_access=$true;include_tests=$false;explicit_classpath=@()};maven_executable="mvn.cmd";cargo_executable="cargo.exe";rustc_executable="rustc.exe";cargo=@{};timeout_ms=120000} | ConvertTo-Json -Depth 5 -Compress
         $jsonl = Join-Path $temp "$fixture.jsonl"
         $jsonLines = @($request | & java -Xmx1024m -jar $jar)
         if ($LASTEXITCODE -ne 0) { throw "$fixture analyzer run failed" }

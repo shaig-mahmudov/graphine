@@ -1,7 +1,7 @@
 use graphine_protocol::{
     ANALYZER_PLACEHOLDER, AnalyzerDiagnostic, AnalyzerSummary, Confidence, EdgeOccurrence,
-    GenerationState, GraphineError, ProjectId, SCHEMA_VERSION, StableId, SyntheticEdge,
-    SyntheticGraph, SyntheticNode,
+    GenerationState, GraphineError, ProjectId, ProjectLanguage, SCHEMA_VERSION, StableId,
+    SyntheticEdge, SyntheticGraph, SyntheticNode,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -150,6 +150,18 @@ CREATE INDEX idx_edge_occurrences_file ON edge_occurrences(project_id, generatio
 UPDATE projects SET schema_version=3;
 ";
 
+const MIGRATION_4: &str = r"
+ALTER TABLE projects ADD COLUMN language TEXT NOT NULL DEFAULT 'java'
+    CHECK (language IN ('java','rust'));
+ALTER TABLE project_generations ADD COLUMN language TEXT NOT NULL DEFAULT 'java'
+    CHECK (language IN ('java','rust'));
+ALTER TABLE project_generations ADD COLUMN analyzer_name TEXT;
+ALTER TABLE nodes ADD COLUMN namespace_path TEXT;
+UPDATE nodes SET namespace_path=package_name WHERE namespace_path IS NULL;
+CREATE INDEX idx_nodes_namespace_path ON nodes(project_id, generation, namespace_path);
+UPDATE projects SET schema_version=4;
+";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRecord {
     pub id: ProjectId,
@@ -158,6 +170,7 @@ pub struct ProjectRecord {
     pub registered_at_ms: i64,
     pub source_fingerprint: Option<String>,
     pub analyzer_version: String,
+    pub language: ProjectLanguage,
     pub schema_version: i64,
 }
 
@@ -175,6 +188,7 @@ pub struct IndexStatus {
     pub diagnostic_count: u64,
     pub partial: bool,
     pub analyzer_protocol_version: Option<u32>,
+    pub analyzer_name: Option<String>,
     pub analysis_summary: Option<Value>,
 }
 
@@ -186,6 +200,7 @@ pub struct NodeRecord {
     pub simple_name: String,
     pub module_name: Option<String>,
     pub package_name: Option<String>,
+    pub namespace_path: Option<String>,
     pub file_path: Option<String>,
     pub start_line: Option<u32>,
     pub end_line: Option<u32>,
@@ -213,6 +228,7 @@ pub struct GraphSummary {
     pub edge_counts: Vec<(String, u64)>,
     pub modules: Vec<String>,
     pub packages: Vec<String>,
+    pub namespaces: Vec<String>,
     pub unresolved_count: u64,
 }
 
@@ -237,7 +253,9 @@ pub struct EvidenceLocation {
 #[derive(Debug, Clone)]
 pub struct AnalysisIngestion {
     pub protocol_version: u32,
+    pub analyzer_name: String,
     pub analyzer_version: String,
+    pub language: ProjectLanguage,
     pub source_fingerprint: String,
     pub partial: bool,
     pub summary: AnalyzerSummary,
@@ -328,6 +346,22 @@ impl Database {
                 )
                 .map_err(db_error)?;
         }
+        let has_version_4: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=4)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !has_version_4 {
+            transaction.execute_batch(MIGRATION_4).map_err(db_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (4, ?1)",
+                    [now_ms()],
+                )
+                .map_err(db_error)?;
+        }
         transaction.commit().map_err(db_error)
     }
 
@@ -340,6 +374,7 @@ impl Database {
         &self,
         root: &Path,
         display_name: Option<&str>,
+        language: ProjectLanguage,
         allowed_roots: &[PathBuf],
     ) -> Result<ProjectRecord, GraphineError> {
         let canonical = fs::canonicalize(root).map_err(|_| GraphineError::InvalidPath)?;
@@ -377,16 +412,17 @@ impl Database {
         let id = ProjectId::from_canonical_root(&canonical);
         self.connection
             .execute(
-                "INSERT INTO projects(project_id, canonical_root, display_name, registered_at_ms, analyzer_version, schema_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(canonical_root) DO UPDATE SET display_name=excluded.display_name",
+                "INSERT INTO projects(project_id, canonical_root, display_name, registered_at_ms, analyzer_version, schema_version, language)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(canonical_root) DO UPDATE SET display_name=excluded.display_name, language=excluded.language",
                 params![
                     id.as_str(),
                     canonical.to_string_lossy(),
                     name,
                     now_ms(),
                     ANALYZER_PLACEHOLDER,
-                    SCHEMA_VERSION
+                    SCHEMA_VERSION,
+                    language.to_string()
                 ],
             )
             .map_err(db_error)?;
@@ -427,7 +463,7 @@ impl Database {
     pub fn list_projects(&self) -> Result<Vec<ProjectRecord>, GraphineError> {
         let mut statement = self
             .connection
-            .prepare("SELECT project_id, canonical_root, display_name, registered_at_ms, source_fingerprint, analyzer_version, schema_version FROM projects ORDER BY display_name, project_id")
+            .prepare("SELECT project_id, canonical_root, display_name, registered_at_ms, source_fingerprint, analyzer_version, language, schema_version FROM projects ORDER BY display_name, project_id")
             .map_err(db_error)?;
         statement
             .query_map([], project_from_row)
@@ -444,7 +480,7 @@ impl Database {
     pub fn project_by_ref(&self, reference: &str) -> Result<ProjectRecord, GraphineError> {
         self.connection
             .query_row(
-                "SELECT project_id, canonical_root, display_name, registered_at_ms, source_fingerprint, analyzer_version, schema_version
+                "SELECT project_id, canonical_root, display_name, registered_at_ms, source_fingerprint, analyzer_version, language, schema_version
                  FROM projects WHERE project_id=?1 OR display_name=?1 COLLATE NOCASE",
                 [reference],
                 project_from_row,
@@ -480,7 +516,8 @@ impl Database {
             .map_err(db_error)?;
         transaction
             .execute(
-                "INSERT INTO project_generations(project_id, generation, state, created_at_ms) VALUES (?1, ?2, 'CREATED', ?3)",
+                "INSERT INTO project_generations(project_id, generation, state, created_at_ms, language)
+                 SELECT ?1, ?2, 'CREATED', ?3, language FROM projects WHERE project_id=?1",
                 params![project.as_str(), generation, now_ms()],
             )
             .map_err(db_error)?;
@@ -651,6 +688,7 @@ impl Database {
             diagnostic_count,
             partial,
             protocol,
+            analyzer_name,
             summary,
         ) = if let Some(generation) = active_generation {
             self.connection
@@ -659,14 +697,14 @@ impl Database {
                             (SELECT COUNT(*) FROM edges WHERE project_id=?1 AND generation=?2),
                             (SELECT COUNT(*) FROM edge_occurrences WHERE project_id=?1 AND generation=?2),
                             (SELECT COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2),
-                            partial, analyzer_protocol_version, summary_json
+                            partial, analyzer_protocol_version, analyzer_name, summary_json
                      FROM project_generations WHERE project_id=?1 AND generation=?2",
                     params![project.id.as_str(), generation],
-                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, bool>(4)?, row.get::<_, Option<u32>>(5)?, row.get::<_, Option<String>>(6)?)),
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, bool>(4)?, row.get::<_, Option<u32>>(5)?, row.get::<_, Option<String>>(6)?, row.get::<_, Option<String>>(7)?)),
                 )
                 .map_err(db_error)?
         } else {
-            (0, 0, 0, 0, false, None, None)
+            (0, 0, 0, 0, false, None, None, None)
         };
         Ok(IndexStatus {
             project,
@@ -681,6 +719,7 @@ impl Database {
             diagnostic_count,
             partial,
             analyzer_protocol_version: protocol,
+            analyzer_name,
             analysis_summary: summary
                 .map(|value| serde_json::from_str(&value).map_err(|_| GraphineError::Database))
                 .transpose()?,
@@ -758,6 +797,7 @@ impl Database {
         )?;
         let modules = distinct_strings(&self.connection, "module_name", &status, generation)?;
         let packages = distinct_strings(&self.connection, "package_name", &status, generation)?;
+        let namespaces = distinct_strings(&self.connection, "namespace_path", &status, generation)?;
         let unresolved = self.connection.query_row(
             "SELECT (SELECT COUNT(*) FROM nodes WHERE project_id=?1 AND generation=?2 AND unresolved_json <> '[]') +
                     (SELECT COUNT(*) FROM analyzer_diagnostics WHERE project_id=?1 AND generation=?2)",
@@ -770,6 +810,7 @@ impl Database {
             edge_counts: edges,
             modules,
             packages,
+            namespaces,
             unresolved_count: unresolved,
         })
     }
@@ -798,7 +839,7 @@ impl Database {
             .unwrap_or(&escaped_query);
         let token_pattern = format!("%{token}%");
         let mut statement = self.connection.prepare(
-            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, namespace_path, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
              FROM nodes WHERE project_id=?1 AND generation=?2 AND
                 (qualified_name LIKE ?3 OR simple_name LIKE ?3 OR stable_id LIKE ?3 OR qualified_name LIKE ?4 OR simple_name LIKE ?4)
              ORDER BY CASE WHEN qualified_name=?5 OR simple_name=?5 THEN 0 ELSE 1 END, stable_id LIMIT ?6"
@@ -847,7 +888,7 @@ impl Database {
             .active_generation
             .ok_or(GraphineError::IndexNotReady)?;
         let node = self.connection.query_row(
-            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, namespace_path, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
              FROM nodes WHERE project_id=?1 AND generation=?2 AND stable_id=?3",
             params![status.project.id.as_str(), generation, stable_id.as_str()],
             node_from_row,
@@ -1062,7 +1103,7 @@ impl Database {
             .active_generation
             .ok_or(GraphineError::IndexNotReady)?;
         let mut statement = self.connection.prepare(
-            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+            "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, namespace_path, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
              FROM nodes WHERE project_id=?1 AND generation=?2 ORDER BY stable_id LIMIT ?3",
         ).map_err(db_error)?;
         let nodes = statement
@@ -1102,7 +1143,7 @@ impl Database {
             .ok_or(GraphineError::IndexNotReady)?;
         self.connection
             .query_row(
-                "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
+                "SELECT stable_id, kind, qualified_name, simple_name, module_name, package_name, namespace_path, file_path, start_line, end_line, confidence, provenance, metadata_json, unresolved_json
                  FROM nodes WHERE project_id=?1 AND generation=?2 AND stable_id=?3",
                 params![status.project.id.as_str(), generation, stable_id],
                 node_from_row,
@@ -1280,6 +1321,27 @@ impl Database {
             .map_err(db_error)
     }
 
+    /// Counts Rust tests represented either by Cargo test targets or `#[test]` metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an index or database error.
+    pub fn rust_test_count(&self, status: &IndexStatus) -> Result<u64, GraphineError> {
+        let generation = status
+            .active_generation
+            .ok_or(GraphineError::IndexNotReady)?;
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM nodes
+                 WHERE project_id=?1 AND generation=?2
+                   AND (REPLACE(file_path, '\\', '/') LIKE 'tests/%'
+                        OR metadata_json LIKE '%\"test\":true%')",
+                params![status.project.id.as_str(), generation],
+                |row| row.get(0),
+            )
+            .map_err(db_error)
+    }
+
     /// Returns every indexed source location, de-duplicated and generation-bound.
     ///
     /// # Errors
@@ -1335,9 +1397,9 @@ fn insert_node(
     let unresolved =
         serde_json::to_string(&node.unresolved).map_err(|_| GraphineError::Internal)?;
     transaction.execute(
-        "INSERT INTO nodes(project_id,generation,stable_id,kind,qualified_name,simple_name,module_name,package_name,file_path,start_line,end_line,confidence,provenance,metadata_json,unresolved_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-        params![project.id.as_str(),generation,node.stable_id,node.kind,node.qualified_name,simple,node.module_name,node.package_name,node.file_path,node.start_line,node.end_line,node.confidence.to_string(),node.provenance,metadata,unresolved],
+        "INSERT INTO nodes(project_id,generation,stable_id,kind,qualified_name,simple_name,module_name,package_name,namespace_path,file_path,start_line,end_line,confidence,provenance,metadata_json,unresolved_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+        params![project.id.as_str(),generation,node.stable_id,node.kind,node.qualified_name,simple,node.module_name,node.package_name,node.namespace_path.as_ref().or(node.package_name.as_ref()),node.file_path,node.start_line,node.end_line,node.confidence.to_string(),node.provenance,metadata,unresolved],
     ).map_err(db_error)?;
     if let (Some(file), Some(start), Some(end)) = (&node.file_path, node.start_line, node.end_line)
     {
@@ -1358,13 +1420,16 @@ fn insert_analysis_metadata(
     let summary = serde_json::to_string(&analysis.summary).map_err(|_| GraphineError::Internal)?;
     transaction
         .execute(
-            "UPDATE project_generations SET analyzer_protocol_version=?3, analyzer_version=?4,
-         source_fingerprint=?5, partial=?6, summary_json=?7 WHERE project_id=?1 AND generation=?2",
+            "UPDATE project_generations SET analyzer_protocol_version=?3, analyzer_name=?4,
+         analyzer_version=?5, language=?6, source_fingerprint=?7, partial=?8, summary_json=?9
+         WHERE project_id=?1 AND generation=?2",
             params![
                 project.as_str(),
                 generation,
                 analysis.protocol_version,
+                analysis.analyzer_name,
                 analysis.analyzer_version,
+                analysis.language.to_string(),
                 analysis.source_fingerprint,
                 analysis.partial,
                 summary
@@ -1372,8 +1437,8 @@ fn insert_analysis_metadata(
         )
         .map_err(db_error)?;
     transaction.execute(
-        "UPDATE projects SET source_fingerprint=?2, analyzer_version=?3, schema_version=?4 WHERE project_id=?1",
-        params![project.as_str(), analysis.source_fingerprint, analysis.analyzer_version, SCHEMA_VERSION],
+        "UPDATE projects SET source_fingerprint=?2, analyzer_version=?3, language=?4, schema_version=?5 WHERE project_id=?1",
+        params![project.as_str(), analysis.source_fingerprint, analysis.analyzer_version, analysis.language.to_string(), SCHEMA_VERSION],
     ).map_err(db_error)?;
     for (ordinal, diagnostic) in analysis.diagnostics.iter().enumerate() {
         transaction.execute(
@@ -1575,14 +1640,18 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> 
         registered_at_ms: row.get(3)?,
         source_fingerprint: row.get(4)?,
         analyzer_version: row.get(5)?,
-        schema_version: row.get(6)?,
+        language: row
+            .get::<_, String>(6)?
+            .parse()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        schema_version: row.get(7)?,
     })
 }
 
 fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRecord> {
-    let confidence: String = row.get(9)?;
-    let metadata: String = row.get(11)?;
-    let unresolved: String = row.get(12)?;
+    let confidence: String = row.get(10)?;
+    let metadata: String = row.get(12)?;
+    let unresolved: String = row.get(13)?;
     Ok(NodeRecord {
         stable_id: row.get(0)?,
         kind: row.get(1)?,
@@ -1590,13 +1659,14 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRecord> {
         simple_name: row.get(3)?,
         module_name: row.get(4)?,
         package_name: row.get(5)?,
-        file_path: row.get(6)?,
-        start_line: row.get(7)?,
-        end_line: row.get(8)?,
+        namespace_path: row.get(6)?,
+        file_path: row.get(7)?,
+        start_line: row.get(8)?,
+        end_line: row.get(9)?,
         confidence: confidence
             .parse()
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
-        provenance: row.get(10)?,
+        provenance: row.get(11)?,
         metadata: serde_json::from_str(&metadata).map_err(|_| rusqlite::Error::InvalidQuery)?,
         unresolved: serde_json::from_str(&unresolved).map_err(|_| rusqlite::Error::InvalidQuery)?,
     })
@@ -1701,6 +1771,7 @@ mod tests {
                 simple_name: None,
                 module_name: Some("app".to_owned()),
                 package_name: Some("example".to_owned()),
+                namespace_path: Some("example".to_owned()),
                 file_path: Some("src/Sample.java".to_owned()),
                 start_line: Some(1),
                 end_line: Some(1),
@@ -1743,11 +1814,62 @@ mod tests {
     }
 
     #[test]
+    fn schema_v4_migrates_existing_java_data_without_reindexing() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection.execute_batch(MIGRATION_3).unwrap();
+        for version in 1..=3 {
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?1, 0)",
+                    [version],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO projects(project_id,canonical_root,display_name,registered_at_ms,analyzer_version,schema_version)
+                 VALUES ('project:00000000-0000-0000-0000-000000000001','C:/fixture','legacy',0,'legacy',3)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project_generations(project_id,generation,state,created_at_ms)
+                 VALUES ('project:00000000-0000-0000-0000-000000000001',1,'READY',0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO nodes(project_id,generation,stable_id,kind,qualified_name,simple_name,module_name,package_name,file_path,start_line,end_line,confidence,provenance,metadata_json,unresolved_json)
+                 VALUES ('project:00000000-0000-0000-0000-000000000001',1,'type:legacy.Sample','TYPE','legacy.Sample','Sample','app','legacy',NULL,NULL,NULL,'COMPILER_RESOLVED','legacy','{}','[]')",
+                [],
+            )
+            .unwrap();
+        let mut database = Database { connection };
+        database.migrate().unwrap();
+        let project = database.project_by_ref("legacy").unwrap();
+        assert_eq!(project.language, ProjectLanguage::Java);
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
+        let namespace: String = database
+            .connection
+            .query_row(
+                "SELECT namespace_path FROM nodes WHERE stable_id='type:legacy.Sample'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(namespace, "legacy");
+    }
+
+    #[test]
     fn logical_edges_preserve_all_validated_occurrences() {
         let root = temp_project("occurrences");
         let mut database = Database::open_in_memory().unwrap();
         database
-            .register_project(&root, Some("occurrences"), &[])
+            .register_project(&root, Some("occurrences"), ProjectLanguage::Java, &[])
             .unwrap();
         let mut fixture = graph("occurrences");
         fixture.edges.push(SyntheticEdge {
@@ -1787,7 +1909,7 @@ mod tests {
         let root = temp_project("lifecycle");
         let mut database = Database::open_in_memory().unwrap();
         let project = database
-            .register_project(&root, Some("sample"), &[])
+            .register_project(&root, Some("sample"), ProjectLanguage::Java, &[])
             .unwrap();
         let first = database.load_synthetic("sample", &graph("sample")).unwrap();
         assert_eq!(
@@ -1817,7 +1939,7 @@ mod tests {
         let root = temp_project("analysis-ingestion");
         let mut database = Database::open_in_memory().unwrap();
         database
-            .register_project(&root, Some("analysis"), &[])
+            .register_project(&root, Some("analysis"), ProjectLanguage::Java, &[])
             .unwrap();
         let diagnostic = AnalyzerDiagnostic {
             kind: "unresolved_binding".to_owned(),
@@ -1829,8 +1951,10 @@ mod tests {
             severity: "warning".to_owned(),
         };
         let ingestion = AnalysisIngestion {
-            protocol_version: 1,
+            protocol_version: graphine_protocol::ANALYZER_PROTOCOL_VERSION,
+            analyzer_name: "graphine-java-jdt".to_owned(),
             analyzer_version: "test-analyzer".to_owned(),
+            language: ProjectLanguage::Java,
             source_fingerprint: "fixture-fingerprint".to_owned(),
             partial: true,
             summary: AnalyzerSummary {
@@ -1847,7 +1971,10 @@ mod tests {
             .unwrap();
         let status = database.status("analysis").unwrap();
         assert_eq!(status.active_generation, Some(generation));
-        assert_eq!(status.analyzer_protocol_version, Some(1));
+        assert_eq!(
+            status.analyzer_protocol_version,
+            Some(graphine_protocol::ANALYZER_PROTOCOL_VERSION)
+        );
         assert_eq!(status.diagnostic_count, 1);
         assert!(status.partial);
         assert_eq!(
@@ -1907,7 +2034,7 @@ mod tests {
         let root = temp_project("interrupted");
         let mut database = Database::open_in_memory().unwrap();
         let project = database
-            .register_project(&root, Some("interrupted"), &[])
+            .register_project(&root, Some("interrupted"), ProjectLanguage::Java, &[])
             .unwrap();
         let active = database
             .load_synthetic("interrupted", &graph("interrupted"))
@@ -1971,18 +2098,28 @@ mod tests {
         let database = Database::open_in_memory().unwrap();
         assert!(
             database
-                .register_project(&root.join("src/Sample.java"), None, &[])
+                .register_project(
+                    &root.join("src/Sample.java"),
+                    None,
+                    ProjectLanguage::Java,
+                    &[],
+                )
                 .is_err()
         );
         assert!(
             database
-                .register_project(&root, Some("unicode-Δ path"), std::slice::from_ref(&root))
+                .register_project(
+                    &root,
+                    Some("unicode-Δ path"),
+                    ProjectLanguage::Java,
+                    std::slice::from_ref(&root),
+                )
                 .is_ok()
         );
         let other = temp_project("other-root");
         assert!(
             database
-                .register_project(&other, Some("other"), &[root])
+                .register_project(&other, Some("other"), ProjectLanguage::Java, &[root])
                 .is_err()
         );
     }

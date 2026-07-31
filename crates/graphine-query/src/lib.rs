@@ -1,7 +1,7 @@
 use graphine_index::{Database, EdgeRecord, EvidenceLocation, IndexStatus, NodeRecord};
 use graphine_protocol::{
     Budget, Completeness, DetailLevel, Direction, EvidenceRef, GraphineConfig, GraphineError,
-    Pagination, ResponseEnvelope, StableId, TruncationState, UncertaintyState,
+    Pagination, ProjectLanguage, ResponseEnvelope, StableId, TruncationState, UncertaintyState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,6 +37,8 @@ pub struct SearchSymbolRequest {
     pub module: Option<String>,
     #[serde(default)]
     pub package_prefix: Option<String>,
+    #[serde(default)]
+    pub namespace_prefix: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
     #[serde(default)]
@@ -124,6 +126,7 @@ impl<'a> QueryService<'a> {
     ///
     /// Returns project, index, budget, or database errors.
     #[instrument(skip(self, request), fields(project = request.project))]
+    #[allow(clippy::too_many_lines)]
     pub fn get_project_map(
         &self,
         request: &ProjectMapRequest,
@@ -141,36 +144,46 @@ impl<'a> QueryService<'a> {
             ));
         }
         let counts = self.database.framework_counts(&graph.status)?;
-        let major_areas: Vec<_> = self
-            .database
-            .package_metrics(&graph.status, 12)?
-            .into_iter()
-            .filter(|area| {
-                !area.package.starts_with("java.")
-                    && !area.package.starts_with("javax.")
-                    && !area.package.starts_with("jakarta.")
-                    && !area.package.starts_with("org.springframework.")
-                    && (area.framework_components > 0 || area.internal_edges > 0)
-            })
-            .map(|area| {
-                json!({
-                    "package": area.package,
-                    "roles": area.roles,
-                    "framework_components": area.framework_components,
-                    "internal_edges": area.internal_edges,
-                    "routes": area.routes,
-                    "repositories": area.repositories,
-                    "entities": area.entities,
+        let major_areas: Vec<_> = if graph.status.project.language == ProjectLanguage::Java {
+            self.database
+                .package_metrics(&graph.status, 12)?
+                .into_iter()
+                .filter(|area| {
+                    !area.package.starts_with("java.")
+                        && !area.package.starts_with("javax.")
+                        && !area.package.starts_with("jakarta.")
+                        && !area.package.starts_with("org.springframework.")
+                        && (area.framework_components > 0 || area.internal_edges > 0)
                 })
-            })
-            .collect();
+                .map(|area| {
+                    json!({
+                        "namespace": area.package,
+                        "package": area.package,
+                        "roles": area.roles,
+                        "framework_components": area.framework_components,
+                        "internal_edges": area.internal_edges,
+                        "routes": area.routes,
+                        "repositories": area.repositories,
+                        "entities": area.entities,
+                    })
+                })
+                .collect()
+        } else {
+            graph
+                .namespaces
+                .iter()
+                .take(12)
+                .map(|namespace| json!({"namespace":namespace}))
+                .collect()
+        };
         let key_application_roots = major_areas
             .iter()
             .take(3)
-            .filter_map(|area| area.get("package"))
+            .filter_map(|area| area.get("namespace").or_else(|| area.get("package")))
             .cloned()
             .collect::<Vec<_>>();
         let mut result_value = json!({
+            "language": graph.status.project.language,
             "summary": {
                 "modules": graph.modules.len(),
                 "controllers": counts.get("controllers").copied().unwrap_or(0),
@@ -188,6 +201,18 @@ impl<'a> QueryService<'a> {
             "partial": graph.status.partial,
             "key_application_roots": key_application_roots,
         });
+        if graph.status.project.language == ProjectLanguage::Rust {
+            result_value["summary"] = json!({
+                "crates": count_kind(&graph.node_counts, "crate"),
+                "modules": count_kind(&graph.node_counts, "module"),
+                "types": count_kind(&graph.node_counts, "type"),
+                "traits": count_kind(&graph.node_counts, "trait"),
+                "functions": count_kind(&graph.node_counts, "function")
+                    + count_kind(&graph.node_counts, "method"),
+                "tests": self.database.rust_test_count(&graph.status)?,
+                "unresolved_diagnostics": graph.unresolved_count,
+            });
+        }
         let envelope = compact_agent_result(
             &graph.status,
             &mut result_value,
@@ -254,12 +279,13 @@ impl<'a> QueryService<'a> {
             "search_symbol",
             None,
             format!(
-                "query={};kinds={:?};roles={:?};module={:?};package={:?};detail={:?}",
+                "query={};kinds={:?};roles={:?};module={:?};package={:?};namespace={:?};detail={:?}",
                 request.query.trim(),
                 request.kinds,
                 request.framework_roles,
                 request.module,
                 request.package_prefix,
+                request.namespace_prefix,
                 request.detail
             ),
         );
@@ -271,9 +297,15 @@ impl<'a> QueryService<'a> {
                 .as_ref()
                 .is_none_or(|module| node.module_name.as_deref() == Some(module.as_str()))
                 && request.package_prefix.as_ref().is_none_or(|prefix| {
-                    node.package_name
+                    node.namespace_path
                         .as_deref()
-                        .is_some_and(|package| package.starts_with(prefix))
+                        .or(node.package_name.as_deref())
+                        .is_some_and(|namespace| namespace.starts_with(prefix))
+                })
+                && request.namespace_prefix.as_ref().is_none_or(|prefix| {
+                    node.namespace_path
+                        .as_deref()
+                        .is_some_and(|namespace| namespace.starts_with(prefix))
                 })
                 && (request.framework_roles.is_empty()
                     || resolved_framework_role(self.database, &status, node).is_some_and(|role| {
@@ -381,6 +413,10 @@ impl<'a> QueryService<'a> {
             ("routes".to_owned(), Vec::new()),
             ("events".to_owned(), Vec::new()),
             ("tests".to_owned(), Vec::new()),
+            ("types".to_owned(), Vec::new()),
+            ("implementations".to_owned(), Vec::new()),
+            ("imports".to_owned(), Vec::new()),
+            ("field_access".to_owned(), Vec::new()),
         ]);
         let mut evidence_refs = BTreeSet::new();
         let mut ambiguities = Vec::new();
@@ -433,6 +469,10 @@ impl<'a> QueryService<'a> {
                 ) => "data_access",
                 (_, "HANDLED_BY" | "EXPOSES_ROUTE") => "routes",
                 (_, "PUBLISHES_EVENT" | "LISTENS_TO_EVENT") => "events",
+                (_, "REFERENCES_TYPE" | "ACCEPTS_TYPE" | "RETURNS_TYPE") => "types",
+                (_, "IMPLEMENTS" | "IMPLEMENTS_METHOD") => "implementations",
+                (_, "IMPORTS") => "imports",
+                (_, "READS_FIELD" | "WRITES_FIELD") => "field_access",
                 _ if related
                     .file_path
                     .as_deref()
@@ -520,7 +560,9 @@ impl<'a> QueryService<'a> {
         }
         let mut result_value = json!({
             "symbol": search_result_fact(&status, &node, request.detail),
-            "java_signature": java_signature(&node),
+            "language": status.project.language,
+            "signature": generic_signature(&node),
+            "java_signature": (status.project.language == ProjectLanguage::Java).then(|| java_signature(&node)),
             "annotations": node.metadata.get("annotations").cloned().unwrap_or_else(|| json!([])),
             "framework_role": framework_role(&node),
             "callers": grouped.remove("callers").unwrap_or_default(),
@@ -530,6 +572,10 @@ impl<'a> QueryService<'a> {
             "routes": grouped.remove("routes").unwrap_or_default(),
             "events": grouped.remove("events").unwrap_or_default(),
             "tests": grouped.remove("tests").unwrap_or_default(),
+            "types": grouped.remove("types").unwrap_or_default(),
+            "implementations": grouped.remove("implementations").unwrap_or_default(),
+            "imports": grouped.remove("imports").unwrap_or_default(),
+            "field_access": grouped.remove("field_access").unwrap_or_default(),
             "evidence_refs": evidence_refs,
         });
         let action_references = result_value["evidence_refs"]
@@ -559,6 +605,10 @@ impl<'a> QueryService<'a> {
             format!("depth={depth}"),
             &[
                 "tests",
+                "field_access",
+                "imports",
+                "implementations",
+                "types",
                 "evidence_refs",
                 "events",
                 "routes",
@@ -623,6 +673,8 @@ impl<'a> QueryService<'a> {
                 "events" => &["PUBLISHES_EVENT", "LISTENS_TO_EVENT"],
                 "dependencies" => &["INJECTS", "SELECTED_BEAN", "BEAN_CANDIDATE"],
                 "routes" => &["EXPOSES_ROUTE", "HANDLED_BY"],
+                "types" => &["REFERENCES_TYPE", "ACCEPTS_TYPE", "RETURNS_TYPE"],
+                "imports" => &["IMPORTS"],
                 _ => {
                     return Err(GraphineError::InvalidArgument(format!(
                         "unknown edge group: {group}"
@@ -794,9 +846,15 @@ impl<'a> QueryService<'a> {
         let indexing_time_ms = status
             .analysis_summary
             .as_ref()
-            .and_then(|summary| summary.get("duration_ms"))
+            .and_then(|summary| {
+                summary
+                    .get("timings_ms")
+                    .and_then(|timings| timings.get("total"))
+                    .or_else(|| summary.get("duration_ms"))
+            })
             .cloned();
         let mut result_value = json!({
+            "language": status.project.language,
             "state": status.state,
             "generation": status.active_generation,
             "source_fingerprint": status.project.source_fingerprint,
@@ -804,21 +862,28 @@ impl<'a> QueryService<'a> {
             "partial": status.partial,
             "analyzer_versions": {
                 "graphine": env!("CARGO_PKG_VERSION"),
-                "java_analyzer": status.project.analyzer_version,
+                "analyzer": status.project.analyzer_version,
+                "analyzer_name": status.analyzer_name,
                 "protocol": status.analyzer_protocol_version,
             },
             "capabilities": {
-                "java": capabilities.get("java_semantics").or_else(|| capabilities.get("java")).cloned().unwrap_or(Value::Bool(true)),
+                "java": capabilities.get("java_semantics").or_else(|| capabilities.get("java")).cloned().unwrap_or(Value::Bool(status.project.language == ProjectLanguage::Java)),
                 "spring": capabilities.get("spring_static_semantics").or_else(|| capabilities.get("spring")).cloned().unwrap_or(Value::Bool(false)),
+                "rust": capabilities.get("rust_semantics").cloned().unwrap_or(Value::Bool(false)),
                 "reported": capabilities,
             },
+            "analysis_configuration": status.analysis_summary.as_ref().and_then(|summary| summary.get("configuration")).cloned().unwrap_or_else(|| json!({})),
             "diagnostic_counts": diagnostics,
             "indexing_time_ms": indexing_time_ms,
             "indexed_modules": graph.modules,
             "indexed_source_sets": source_sets,
             "excluded_files": [],
             "evidence_excluded_paths": self.config.evidence_excluded_paths,
-            "unsupported_areas": ["runtime execution paths", "runtime bean condition outcomes", "reflection-only wiring", "dynamic routes"],
+            "unsupported_areas": if status.project.language == ProjectLanguage::Rust {
+                json!(["runtime execution paths", "procedural macros and build output in safe mode", "cross-language calls", "Rust web-framework semantics"])
+            } else {
+                json!(["runtime execution paths", "runtime bean condition outcomes", "reflection-only wiring", "dynamic routes", "Gradle"])
+            },
             "counts": {"nodes": status.node_count, "edges": status.edge_count, "occurrences": status.occurrence_count},
             "last_successful_activation_ms": status.last_successful_activation_ms,
         });
@@ -1120,9 +1185,17 @@ fn agent_search_rank(request: &SearchSymbolRequest, node: &NodeRecord) -> u32 {
         rank += 40;
     }
     if request.package_prefix.as_ref().is_some_and(|prefix| {
-        node.package_name
+        node.namespace_path
             .as_deref()
-            .is_some_and(|package| package.starts_with(prefix))
+            .or(node.package_name.as_deref())
+            .is_some_and(|namespace| namespace.starts_with(prefix))
+    }) {
+        rank += 30;
+    }
+    if request.namespace_prefix.as_ref().is_some_and(|prefix| {
+        node.namespace_path
+            .as_deref()
+            .is_some_and(|namespace| namespace.starts_with(prefix))
     }) {
         rank += 30;
     }
@@ -1219,8 +1292,9 @@ fn search_result_fact(status: &IndexStatus, node: &NodeRecord, detail: DetailLev
         "stable_id": node.stable_id,
         "kind": node.kind,
         "qualified_name": node.qualified_name,
+        "language": status.project.language,
         "framework_role": framework_role(node),
-        "signature": (node.kind == "METHOD" || node.kind == "CONSTRUCTOR").then(|| java_signature(node)),
+        "signature": generic_signature(node),
         "route": route,
         "location": node.file_path.as_ref().map(|file| json!({
             "file": file,
@@ -1255,6 +1329,28 @@ fn java_signature(node: &NodeRecord) -> String {
         || node.qualified_name.clone(),
         |(_, signature)| signature.to_owned(),
     )
+}
+
+fn generic_signature(node: &NodeRecord) -> Option<String> {
+    node.metadata
+        .get("signature")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            matches!(
+                node.kind.to_ascii_lowercase().as_str(),
+                "method" | "constructor" | "function"
+            )
+            .then(|| java_signature(node))
+        })
+}
+
+fn count_kind(counts: &[(String, u64)], kind: &str) -> u64 {
+    counts
+        .iter()
+        .filter(|(reported, _)| reported.eq_ignore_ascii_case(kind))
+        .map(|(_, count)| *count)
+        .sum()
 }
 
 fn normalize_tokens(value: &str) -> String {
@@ -1448,6 +1544,7 @@ mod tests {
             simple_name: name.to_owned(),
             module_name: None,
             package_name: Some("example".to_owned()),
+            namespace_path: Some("example".to_owned()),
             file_path: None,
             start_line: None,
             end_line: None,
@@ -1550,7 +1647,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let mut database = Database::open_in_memory().unwrap();
         database
-            .register_project(&root, Some("large"), &[])
+            .register_project(
+                &root,
+                Some("large"),
+                graphine_protocol::ProjectLanguage::Java,
+                &[],
+            )
             .unwrap();
         let node_count = 10_000_usize;
         let nodes = (0..node_count)
@@ -1561,6 +1663,7 @@ mod tests {
                 simple_name: None,
                 module_name: Some("benchmark".to_owned()),
                 package_name: Some("bench".to_owned()),
+                namespace_path: Some("bench".to_owned()),
                 file_path: None,
                 start_line: None,
                 end_line: None,
@@ -1602,6 +1705,7 @@ mod tests {
                 framework_roles: Vec::new(),
                 module: None,
                 package_prefix: None,
+                namespace_prefix: None,
                 limit: Some(10),
                 cursor: None,
                 detail: DetailLevel::Summary,
@@ -1642,6 +1746,7 @@ mod tests {
                 registered_at_ms: 0,
                 source_fingerprint: None,
                 analyzer_version: "test".to_owned(),
+                language: graphine_protocol::ProjectLanguage::Java,
                 schema_version: 1,
             },
             active_generation: Some(1),
@@ -1655,6 +1760,7 @@ mod tests {
             diagnostic_count: 0,
             partial: false,
             analyzer_protocol_version: None,
+            analyzer_name: None,
             analysis_summary: None,
         }
     }

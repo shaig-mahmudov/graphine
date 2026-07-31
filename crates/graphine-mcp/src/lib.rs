@@ -192,7 +192,8 @@ pub fn run_stdio<R: BufRead, W: Write>(
         if input.read_line(&mut line)? == 0 {
             break;
         }
-        let trimmed = line.trim();
+        // Windows PowerShell 5.1 prefixes the first native-pipeline record with a UTF-8 BOM.
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
         if trimmed.is_empty() {
             continue;
         }
@@ -835,7 +836,7 @@ mod tests {
     fn stdio_transport_initializes_calls_and_shuts_down() {
         let server = server();
         let input = format!(
-            "{}\n{}\n{}\n{}\n{}\n",
+            "\u{feff}{}\n{}\n{}\n{}\n{}\n",
             request(1, "initialize", initialize_params(LATEST_PROTOCOL_VERSION)),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             request(

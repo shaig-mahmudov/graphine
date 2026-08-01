@@ -224,11 +224,17 @@ final class SymbolVisitor extends ASTVisitor {
         if (!options.includeFieldAccess() || methods.isEmpty() || isDeclarationName(name)) return true;
         IBinding resolved = name.resolveBinding();
         if (resolved instanceof IVariableBinding variable && variable.isField()) {
-            String target = SymbolIds.field(SymbolIds.normalizeType(variable.getDeclaringClass()), variable.getVariableDeclaration().getName());
-            graph.externalType(variable.getDeclaringClass());
-            graph.node(new GraphNode(target, "FIELD", SymbolIds.normalizeType(variable.getDeclaringClass()) + "#" + variable.getName(),
-                    variable.getName(), null, variable.getDeclaringClass().getPackage() == null ? null : variable.getDeclaringClass().getPackage().getName(),
-                    null, null, null, "COMPILER_RESOLVED", "eclipse-jdt-binding", Map.of("external", !types.contains("type:" + SymbolIds.normalizeType(variable.getDeclaringClass()))), List.of()));
+            ResolvedField field = resolveFieldBinding(variable);
+            if (field == null) {
+                unresolved("UNRESOLVED_FIELD_ACCESS", name, name.getIdentifier(),
+                        "Field declaring class or canonical declaration unavailable");
+                return true;
+            }
+            String target = SymbolIds.field(field.ownerName(), field.name());
+            graph.externalType(field.owner());
+            graph.node(new GraphNode(target, "FIELD", field.ownerName() + "#" + field.name(),
+                    field.name(), null, field.owner().getPackage() == null ? null : field.owner().getPackage().getName(),
+                    null, null, null, "COMPILER_RESOLVED", "eclipse-jdt-binding", Map.of("external", !types.contains("type:" + field.ownerName())), List.of()));
             Access access = classifyAccess(name);
             if (access.read) graph.edge(edgeAt(methods.peek(), target, "READS_FIELD", "COMPILER_RESOLVED", Map.of(), name));
             if (access.write) graph.edge(edgeAt(methods.peek(), target, "WRITES_FIELD", "COMPILER_RESOLVED", Map.of(), name));
@@ -376,6 +382,18 @@ final class SymbolVisitor extends ASTVisitor {
                 || prefix.getOperator() == PrefixExpression.Operator.DECREMENT)) return new Access(true, true);
         return new Access(true, false);
     }
+
+    static ResolvedField resolveFieldBinding(IVariableBinding variable) {
+        IVariableBinding declaration = variable.getVariableDeclaration();
+        if (declaration == null) return null;
+        ITypeBinding owner = declaration.getDeclaringClass();
+        if (owner == null) owner = variable.getDeclaringClass();
+        String canonicalName = declaration.getName();
+        if (owner == null || canonicalName == null || canonicalName.isBlank()) return null;
+        return new ResolvedField(owner, SymbolIds.normalizeType(owner), canonicalName);
+    }
+
+    record ResolvedField(ITypeBinding owner, String ownerName, String name) {}
 
     private record Access(boolean read, boolean write) {}
 }

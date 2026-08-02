@@ -105,7 +105,8 @@ final class SymbolVisitor extends ASTVisitor {
         MethodSymbol method = resolveMethodSymbol(owner.substring("type:".length()),
                 declaration.getName().getIdentifier(), fallbackParameters, constructor, binding);
         String id = method.id();
-        IMethodBinding canonical = method.binding();
+        SymbolIds.ResolvedMethod resolved = method.resolved();
+        IMethodBinding canonical = resolved == null ? null : resolved.declaration();
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("declaring_type", owner);
         metadata.put("name", constructor ? "<init>" : declaration.getName().getIdentifier());
@@ -128,8 +129,8 @@ final class SymbolVisitor extends ASTVisitor {
                 declaration.getName().getIdentifier(), "Method binding unavailable or incomplete");
         else {
             graph.resolved();
-            addMethodTypeEdges(id, canonical);
-            addOverrides(id, canonical);
+            addMethodTypeEdges(id, resolved);
+            addOverrides(id, resolved, declaration);
         }
         return options.includeMethodBodies() || declaration.getBody() == null;
     }
@@ -261,15 +262,17 @@ final class SymbolVisitor extends ASTVisitor {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        if (binding == null) {
+        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
+        if (resolved == null) {
             unresolved(constructor ? "UNRESOLVED_CONSTRUCTOR_CALL" : "UNRESOLVED_METHOD_CALL", location,
-                    text, "Declaring type or callable unavailable on classpath");
+                    text, "Canonical method declaration, owner, or parameters unavailable");
             return;
         }
-        String target = graph.externalMethod(binding);
-        String dispatch = binding.isConstructor() || Modifier.isStatic(binding.getModifiers())
-                || Modifier.isPrivate(binding.getModifiers()) || Modifier.isFinal(binding.getModifiers())
-                || Modifier.isFinal(binding.getDeclaringClass().getModifiers())
+        IMethodBinding canonical = resolved.declaration();
+        String target = graph.externalMethod(resolved);
+        String dispatch = resolved.constructor() || Modifier.isStatic(canonical.getModifiers())
+                || Modifier.isPrivate(canonical.getModifiers()) || Modifier.isFinal(canonical.getModifiers())
+                || Modifier.isFinal(resolved.owner().getModifiers())
                 ? "exactly_resolved" : "virtual_declared_target";
         graph.edge(edgeAt(source, target, constructor ? "CONSTRUCTS" : "CALLS",
                 "COMPILER_RESOLVED", Map.of("dispatch", dispatch), location));
@@ -280,37 +283,68 @@ final class SymbolVisitor extends ASTVisitor {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        if (binding == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference", "Target binding unavailable");
+        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
+        if (resolved == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference",
+                "Canonical method declaration, owner, or parameters unavailable");
         else {
-            graph.edge(edgeAt(source, graph.externalMethod(binding), binding.isConstructor() ? "CONSTRUCTS" : "CALLS",
+            graph.edge(edgeAt(source, graph.externalMethod(resolved), resolved.constructor() ? "CONSTRUCTS" : "CALLS",
                     "COMPILER_RESOLVED", Map.of("method_reference", true, "runtime_execution", "not_proven"), location));
             graph.resolved();
         }
     }
 
-    private void addMethodTypeEdges(String source, IMethodBinding binding) {
-        if (!binding.isConstructor() && !binding.getReturnType().isPrimitive())
-            addTypeEdge(source, binding.getReturnType(), "RETURNS_TYPE", Map.of());
-        for (ITypeBinding parameter : binding.getParameterTypes()) addTypeEdge(source, parameter, "ACCEPTS_TYPE", Map.of());
-        for (ITypeBinding thrown : binding.getExceptionTypes()) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
+    private void addMethodTypeEdges(String source, SymbolIds.ResolvedMethod method) {
+        IMethodBinding declaration = method.declaration();
+        ITypeBinding returnType = declaration.getReturnType();
+        if (!method.constructor() && SymbolIds.isUsableType(returnType) && !returnType.isPrimitive())
+            addTypeEdge(source, returnType, "RETURNS_TYPE", Map.of());
+        for (ITypeBinding parameter : method.parameterBindings())
+            addTypeEdge(source, parameter, "ACCEPTS_TYPE", Map.of());
+        ITypeBinding[] exceptions = declaration.getExceptionTypes();
+        if (exceptions != null)
+            for (ITypeBinding thrown : exceptions) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
     }
 
-    private void addOverrides(String source, IMethodBinding binding) {
-        collectOverridden(source, binding, binding.getDeclaringClass().getSuperclass());
-        for (ITypeBinding iface : binding.getDeclaringClass().getInterfaces()) collectOverridden(source, binding, iface);
+    private void addOverrides(String source, SymbolIds.ResolvedMethod method, ASTNode location) {
+        ITypeBinding owner = method.owner();
+        collectOverridden(source, method, owner.getSuperclass(), location);
+        ITypeBinding[] interfaces = owner.getInterfaces();
+        if (interfaces != null)
+            for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
-    private void collectOverridden(String source, IMethodBinding method, ITypeBinding parent) {
+    private void collectOverridden(String source, SymbolIds.ResolvedMethod method,
+                                   ITypeBinding parent, ASTNode location) {
         if (parent == null) return;
-        for (IMethodBinding candidate : parent.getDeclaredMethods()) {
-            if (method.overrides(candidate)) {
-                graph.edge(edge(source, graph.externalMethod(candidate), "OVERRIDES", "COMPILER_RESOLVED",
-                        Map.of("covariant_return", !SymbolIds.normalizeType(method.getReturnType()).equals(SymbolIds.normalizeType(candidate.getReturnType())))));
+        if (!SymbolIds.isUsableType(parent)) {
+            unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
+                    "Parent type binding unavailable or incomplete");
+            return;
+        }
+        IMethodBinding[] candidates = parent.getDeclaredMethods();
+        if (candidates != null) for (IMethodBinding candidate : candidates) {
+            SymbolIds.ResolvedMethod resolvedCandidate = SymbolIds.resolveMethod(candidate);
+            if (resolvedCandidate == null) {
+                unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
+                        "Override candidate binding unavailable or incomplete");
+                continue;
+            }
+            if (method.declaration().overrides(resolvedCandidate.declaration())) {
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                ITypeBinding methodReturn = method.declaration().getReturnType();
+                ITypeBinding candidateReturn = resolvedCandidate.declaration().getReturnType();
+                if (SymbolIds.isUsableType(methodReturn) && SymbolIds.isUsableType(candidateReturn))
+                    metadata.put("covariant_return", !SymbolIds.normalizeType(methodReturn)
+                            .equals(SymbolIds.normalizeType(candidateReturn)));
+                graph.edge(edge(source, graph.externalMethod(resolvedCandidate), "OVERRIDES",
+                        "COMPILER_RESOLVED", metadata));
                 graph.resolved();
             }
         }
-        collectOverridden(source, method, parent.getSuperclass());
-        for (ITypeBinding iface : parent.getInterfaces()) collectOverridden(source, method, iface);
+        collectOverridden(source, method, parent.getSuperclass(), location);
+        ITypeBinding[] interfaces = parent.getInterfaces();
+        if (interfaces != null)
+            for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
     private void addTypeRelation(String source, ITypeBinding target, String kind) {
@@ -318,7 +352,7 @@ final class SymbolVisitor extends ASTVisitor {
     }
 
     private void addTypeEdge(String source, ITypeBinding target, String kind, Map<String, Object> metadata) {
-        if (target == null || target.isPrimitive()) return;
+        if (!SymbolIds.isUsableType(target) || target.isPrimitive()) return;
         graph.edge(edge(source, graph.externalType(target), kind, "COMPILER_RESOLVED", metadata));
     }
 
@@ -408,47 +442,21 @@ final class SymbolVisitor extends ASTVisitor {
         return new ResolvedField(owner, SymbolIds.normalizeType(owner), canonicalName);
     }
 
-    static ResolvedMethod resolveMethodBinding(IMethodBinding binding) {
-        if (binding == null || binding.isRecovered()) return null;
-        IMethodBinding declaration = binding.getMethodDeclaration();
-        if (declaration == null || declaration.isRecovered()) return null;
-        ITypeBinding owner = declaration.getDeclaringClass();
-        String name = declaration.getName();
-        if (!usableType(owner) || name == null || name.isBlank()) return null;
-        ITypeBinding[] parameters = declaration.getParameterTypes();
-        if (parameters == null || Arrays.stream(parameters).anyMatch(parameter -> !usableType(parameter))) return null;
-        return new ResolvedMethod(declaration, SymbolIds.normalizeType(owner), name,
-                Arrays.stream(parameters).map(SymbolIds::normalizeType).toList());
-    }
-
     static MethodSymbol resolveMethodSymbol(String lexicalOwner, String lexicalName,
                                             List<String> fallbackParameters, boolean constructor,
                                             IMethodBinding binding) {
-        ResolvedMethod resolved = resolveMethodBinding(binding);
+        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
         if (resolved == null) {
             List<String> parameterTypes = fallbackParameters.stream().map(SymbolIds::normalizeTextType).toList();
             return new MethodSymbol(SymbolIds.fallbackMethod(lexicalOwner, lexicalName,
                     fallbackParameters, constructor), null, parameterTypes);
         }
-        return new MethodSymbol(SymbolIds.method(resolved.binding()), resolved.binding(), resolved.parameterTypes());
-    }
-
-    private static boolean usableType(ITypeBinding binding) {
-        if (binding == null || binding.isRecovered()) return false;
-        if (binding.isArray()) return binding.getDimensions() > 0 && usableType(binding.getElementType());
-        ITypeBinding normalized = binding.isPrimitive() ? binding : binding.getErasure();
-        if (normalized == null || normalized.isRecovered()) return false;
-        String name = normalized.getQualifiedName();
-        if (name == null || name.isBlank()) name = normalized.getName();
-        return name != null && !name.isBlank();
+        return new MethodSymbol(SymbolIds.method(resolved), resolved, resolved.parameterTypes());
     }
 
     record ResolvedField(ITypeBinding owner, String ownerName, String name) {}
 
-    record ResolvedMethod(IMethodBinding binding, String ownerName, String name,
-                          List<String> parameterTypes) {}
-
-    record MethodSymbol(String id, IMethodBinding binding, List<String> parameterTypes) {}
+    record MethodSymbol(String id, SymbolIds.ResolvedMethod resolved, List<String> parameterTypes) {}
 
     private record Access(boolean read, boolean write) {}
 }

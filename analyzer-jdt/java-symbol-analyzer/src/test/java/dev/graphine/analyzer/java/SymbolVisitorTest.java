@@ -48,8 +48,36 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "LexicalOwner", List.of(), true, constructor);
 
-        assertNull(resolved.binding());
+        assertNull(resolved.resolved());
         assertEquals("constructor:sample.LexicalOwner#<init>()", resolved.id());
+    }
+
+    @Test
+    void constructorCallWithoutDeclaringClassDoesNotEmitExternalTarget() {
+        IMethodBinding constructor = methodBinding(null, "Owner", null,
+                true, false, new ITypeBinding[0]);
+        GraphCollector collector = new GraphCollector();
+
+        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(constructor);
+        String target = collector.externalMethod(resolved);
+
+        assertNull(resolved);
+        assertNull(target);
+        assertEquals(0, collector.nodeCount());
+    }
+
+    @Test
+    void methodReferenceWithoutDeclaringClassDoesNotEmitExternalTarget() {
+        IMethodBinding methodReference = methodBinding(null, "call", null,
+                false, false, new ITypeBinding[] {typeBinding("java.lang.String")});
+        GraphCollector collector = new GraphCollector();
+
+        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(methodReference);
+        String target = collector.externalMethod(resolved);
+
+        assertNull(resolved);
+        assertNull(target);
+        assertEquals(0, collector.nodeCount());
     }
 
     @Test
@@ -60,7 +88,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "LexicalOwner", List.of("java.lang.String"), true, declaration);
 
-        assertNull(resolved.binding());
+        assertNull(resolved.resolved());
         assertEquals("constructor:sample.LexicalOwner#<init>(java.lang.String)", resolved.id());
     }
 
@@ -71,7 +99,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "call", List.of("String", "int..."), false, method);
 
-        assertNull(resolved.binding());
+        assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String,int[])", resolved.id());
     }
 
@@ -83,7 +111,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "call", List.of("String"), false, recovered);
 
-        assertNull(resolved.binding());
+        assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String)", resolved.id());
     }
 
@@ -95,7 +123,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "call", List.of("String"), false, declaration);
 
-        assertNull(resolved.binding());
+        assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String)", resolved.id());
     }
 
@@ -124,7 +152,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "lexicalCall", List.of("Object"), false, method);
 
-        assertSame(declaration, resolved.binding());
+        assertSame(declaration, resolved.resolved().declaration());
         assertEquals("method:sample.DeclaredOwner#declaredCall(java.lang.String)", resolved.id());
         assertEquals(List.of("java.lang.String"), resolved.parameterTypes());
     }
@@ -137,7 +165,7 @@ final class SymbolVisitorTest {
         SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
                 "sample.LexicalOwner", "LexicalOwner", List.of("Object"), true, declaration);
 
-        assertSame(declaration, resolved.binding());
+        assertSame(declaration, resolved.resolved().declaration());
         assertEquals("constructor:sample.DeclaredOwner#<init>(int)", resolved.id());
     }
 

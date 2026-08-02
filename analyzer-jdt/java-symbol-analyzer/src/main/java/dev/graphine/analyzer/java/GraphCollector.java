@@ -13,7 +13,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 
 final class GraphCollector implements GraphSink {
@@ -54,14 +53,15 @@ final class GraphCollector implements GraphSink {
         return id;
     }
 
-    String externalMethod(IMethodBinding binding) {
-        if (binding == null) return null;
-        String owner = externalType(binding.getDeclaringClass());
-        String id = SymbolIds.method(binding);
-        node(new GraphNode(id, binding.isConstructor() ? "CONSTRUCTOR" : "METHOD",
-                SymbolIds.normalizeType(binding.getDeclaringClass()) + "#" + binding.getName(),
-                binding.isConstructor() ? "<init>" : binding.getName(), null,
-                binding.getDeclaringClass().getPackage() == null ? null : binding.getDeclaringClass().getPackage().getName(),
+    String externalMethod(SymbolIds.ResolvedMethod method) {
+        if (method == null) return null;
+        ITypeBinding ownerBinding = method.owner();
+        String owner = externalType(ownerBinding);
+        String id = SymbolIds.method(method);
+        node(new GraphNode(id, method.constructor() ? "CONSTRUCTOR" : "METHOD",
+                method.ownerName() + "#" + method.name(),
+                method.constructor() ? "<init>" : method.name(), null,
+                ownerBinding.getPackage() == null ? null : ownerBinding.getPackage().getName(),
                 null, null, null, "COMPILER_RESOLVED", "eclipse-jdt-binding",
                 Map.of("external", true, "declaring_type", owner), List.of()));
         return id;

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.graphine.analyzer.jdt.CallableIds;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import org.eclipse.jdt.core.dom.IBinding;
@@ -45,8 +46,8 @@ final class SymbolVisitorTest {
         IMethodBinding declaration = methodBinding(null, "Owner", null, true, false, new ITypeBinding[0]);
         IMethodBinding constructor = methodBinding(null, "Owner", declaration, true, false, new ITypeBinding[0]);
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "LexicalOwner", List.of(), true, constructor);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                constructor, "sample.LexicalOwner", "LexicalOwner", List.of(), true);
 
         assertNull(resolved.resolved());
         assertEquals("constructor:sample.LexicalOwner#<init>()", resolved.id());
@@ -58,7 +59,7 @@ final class SymbolVisitorTest {
                 true, false, new ITypeBinding[0]);
         GraphCollector collector = new GraphCollector();
 
-        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(constructor);
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(constructor);
         String target = collector.externalMethod(resolved);
 
         assertNull(resolved);
@@ -72,7 +73,7 @@ final class SymbolVisitorTest {
                 false, false, new ITypeBinding[] {typeBinding("java.lang.String")});
         GraphCollector collector = new GraphCollector();
 
-        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(methodReference);
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(methodReference);
         String target = collector.externalMethod(resolved);
 
         assertNull(resolved);
@@ -85,8 +86,8 @@ final class SymbolVisitorTest {
         IMethodBinding declaration = methodBinding(typeBinding(""), "Owner", null,
                 true, false, new ITypeBinding[0]);
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "LexicalOwner", List.of("java.lang.String"), true, declaration);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                declaration, "sample.LexicalOwner", "LexicalOwner", List.of("java.lang.String"), true);
 
         assertNull(resolved.resolved());
         assertEquals("constructor:sample.LexicalOwner#<init>(java.lang.String)", resolved.id());
@@ -96,8 +97,8 @@ final class SymbolVisitorTest {
     void methodWithoutCanonicalDeclarationFallsBackToLexicalOwner() {
         IMethodBinding method = methodWithoutDeclaration(typeBinding("sample.BindingOwner"), "call");
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "call", List.of("String", "int..."), false, method);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                method, "sample.LexicalOwner", "call", List.of("String", "int..."), false);
 
         assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String,int[])", resolved.id());
@@ -108,8 +109,8 @@ final class SymbolVisitorTest {
         IMethodBinding recovered = methodBinding(typeBinding("sample.BindingOwner"), "call", null,
                 false, true, new ITypeBinding[] {typeBinding("java.lang.String")});
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "call", List.of("String"), false, recovered);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                recovered, "sample.LexicalOwner", "call", List.of("String"), false);
 
         assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String)", resolved.id());
@@ -120,8 +121,8 @@ final class SymbolVisitorTest {
         IMethodBinding declaration = methodBinding(typeBinding("sample.BindingOwner"), "call", null,
                 false, false, new ITypeBinding[] {typeBinding("")});
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "call", List.of("String"), false, declaration);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                declaration, "sample.LexicalOwner", "call", List.of("String"), false);
 
         assertNull(resolved.resolved());
         assertEquals("method:sample.LexicalOwner#call(String)", resolved.id());
@@ -133,10 +134,10 @@ final class SymbolVisitorTest {
         IMethodBinding method = methodWithoutDeclaration(typeBinding("sample.Owner"), "call");
 
         List<String> ids = List.of(
-                SymbolVisitor.resolveMethodSymbol("sample.LexicalOwner", "LexicalOwner",
-                        List.of(), true, constructor).id(),
-                SymbolVisitor.resolveMethodSymbol("sample.LexicalOwner", "call",
-                        List.of("String"), false, method).id());
+                CallableIds.resolveOrFallback(constructor, "sample.LexicalOwner", "LexicalOwner",
+                        List.of(), true).id(),
+                CallableIds.resolveOrFallback(method, "sample.LexicalOwner", "call",
+                        List.of("String"), false).id());
 
         assertTrue(ids.stream().allMatch(id -> id.matches("(?:constructor|method):[^#]+#[^()]+\\(.*\\)")));
         assertFalse(ids.stream().anyMatch(id -> id.startsWith("constructor:#") || id.startsWith("method:#")));
@@ -149,8 +150,8 @@ final class SymbolVisitorTest {
         IMethodBinding method = methodBinding(typeBinding("sample.UseSiteOwner"), "useSiteCall", declaration,
                 false, false, new ITypeBinding[0]);
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "lexicalCall", List.of("Object"), false, method);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                method, "sample.LexicalOwner", "lexicalCall", List.of("Object"), false);
 
         assertSame(declaration, resolved.resolved().declaration());
         assertEquals("method:sample.DeclaredOwner#declaredCall(java.lang.String)", resolved.id());
@@ -162,8 +163,8 @@ final class SymbolVisitorTest {
         IMethodBinding declaration = methodBinding(typeBinding("sample.DeclaredOwner"), "DeclaredOwner", null,
                 true, false, new ITypeBinding[] {typeBinding("int")});
 
-        SymbolVisitor.MethodSymbol resolved = SymbolVisitor.resolveMethodSymbol(
-                "sample.LexicalOwner", "LexicalOwner", List.of("Object"), true, declaration);
+        CallableIds.CallableSymbol resolved = CallableIds.resolveOrFallback(
+                declaration, "sample.LexicalOwner", "LexicalOwner", List.of("Object"), true);
 
         assertSame(declaration, resolved.resolved().declaration());
         assertEquals("constructor:sample.DeclaredOwner#<init>(int)", resolved.id());

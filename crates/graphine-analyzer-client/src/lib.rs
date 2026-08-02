@@ -877,11 +877,21 @@ impl EventCollector {
         {
             return Err(GraphineError::AnalyzerProtocol);
         }
-        if self.edges.iter().any(|edge| {
-            !self.nodes.contains_key(&edge.source_stable_id)
-                || !self.nodes.contains_key(&edge.target_stable_id)
-        }) {
-            return Err(GraphineError::AnalyzerProtocol);
+        for edge in &self.edges {
+            let missing = if !self.nodes.contains_key(&edge.source_stable_id) {
+                Some(("source", &edge.source_stable_id))
+            } else if !self.nodes.contains_key(&edge.target_stable_id) {
+                Some(("target", &edge.target_stable_id))
+            } else {
+                None
+            };
+            if let Some((endpoint, stable_id)) = missing {
+                return Err(GraphineError::AnalyzerProtocolDanglingEdge {
+                    endpoint: endpoint.to_owned(),
+                    stable_id: stable_id.clone(),
+                    edge_kind: edge.kind.clone(),
+                });
+            }
         }
         Ok(RawAnalysis {
             analyzer_name: self.analyzer_name.ok_or(GraphineError::AnalyzerProtocol)?,
@@ -1201,6 +1211,55 @@ mod tests {
                 collector.accept(&event.to_string()).unwrap();
             }
             assert_eq!(collector.finish().unwrap().completion, expected);
+        }
+    }
+
+    #[test]
+    fn dangling_edge_error_identifies_missing_endpoint_and_kind() {
+        for (source, target, endpoint, missing) in [
+            (
+                "method:sample.Missing#run()",
+                "type:sample.Subject",
+                "source",
+                "method:sample.Missing#run()",
+            ),
+            (
+                "type:sample.Subject",
+                "bean:missing",
+                "target",
+                "bean:missing",
+            ),
+        ] {
+            let mut collector = EventCollector::new("id".to_owned(), ProjectLanguage::Java);
+            for event in [
+                json!({"type":"analysis_started","protocol_version":2,"request_id":"id","analyzer_name":"graphine-java-jdt","language":"java","analyzer_version":"test"}),
+                json!({"type":"project_metadata","language":"java","fingerprint":"abc","modules":[],"configuration":{}}),
+                json!({"type":"node","stable_id":"type:sample.Subject","kind":"TYPE","qualified_name":"sample.Subject","confidence":"COMPILER_RESOLVED","provenance":"test","metadata":{},"unresolved":[]}),
+                json!({"type":"edge","source":source,"target":target,"kind":"DECLARES_BEAN","confidence":"FRAMEWORK_RESOLVED","provenance":"test","metadata":{},"occurrences":[]}),
+                json!({"type":"analysis_summary","summary":{"language":"java","files_discovered":1,"files_parsed":1,"files_failed":0,"bindings_resolved":1,"bindings_unresolved":0,"nodes_emitted":1,"edges_emitted":1,"duration_ms":1,"timings_ms":{},"resources":{},"configuration":{},"status":"complete"}}),
+                json!({"type":"analysis_completed","status":"complete"}),
+            ] {
+                collector.accept(&event.to_string()).unwrap();
+            }
+
+            let Err(error) = collector.finish() else {
+                panic!("dangling edge was accepted");
+            };
+
+            assert!(matches!(
+                &error,
+                GraphineError::AnalyzerProtocolDanglingEdge {
+                    endpoint: actual_endpoint,
+                    stable_id,
+                    edge_kind,
+                } if actual_endpoint == endpoint && stable_id == missing && edge_kind == "DECLARES_BEAN"
+            ));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "analyzer protocol failed validation: dangling DECLARES_BEAN edge is missing {endpoint} node {missing}"
+                )
+            );
         }
     }
 

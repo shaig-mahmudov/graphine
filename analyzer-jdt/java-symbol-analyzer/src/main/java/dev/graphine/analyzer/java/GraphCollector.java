@@ -5,6 +5,7 @@ import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
 import dev.graphine.analyzer.protocol.GraphSink;
 import dev.graphine.analyzer.protocol.ProtocolWriter;
+import dev.graphine.analyzer.jdt.CallableIds;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -53,7 +54,7 @@ final class GraphCollector implements GraphSink {
         return id;
     }
 
-    String externalMethod(SymbolIds.ResolvedMethod method) {
+    String externalMethod(CallableIds.ResolvedMethod method) {
         if (method == null) return null;
         ITypeBinding ownerBinding = method.owner();
         String owner = externalType(ownerBinding);

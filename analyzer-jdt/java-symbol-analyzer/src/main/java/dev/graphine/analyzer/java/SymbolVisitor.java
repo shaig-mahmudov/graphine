@@ -5,6 +5,7 @@ import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.EdgeOccurrence;
 import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
+import dev.graphine.analyzer.jdt.CallableIds;
 import dev.graphine.analyzer.resolver.SourceRoot;
 import java.lang.reflect.Modifier;
 import java.nio.file.Path;
@@ -99,13 +100,10 @@ final class SymbolVisitor extends ASTVisitor {
         if (owner == null) return true;
         IMethodBinding binding = declaration.resolveBinding();
         boolean constructor = declaration.isConstructor();
-        List<String> fallbackParameters = declaration.parameters().stream()
-                .map(value -> fallbackParameterType((SingleVariableDeclaration) value))
-                .toList();
-        MethodSymbol method = resolveMethodSymbol(owner.substring("type:".length()),
-                declaration.getName().getIdentifier(), fallbackParameters, constructor, binding);
+        CallableIds.CallableSymbol method = CallableIds.forDeclaration(binding,
+                owner.substring("type:".length()), declaration);
         String id = method.id();
-        SymbolIds.ResolvedMethod resolved = method.resolved();
+        CallableIds.ResolvedMethod resolved = method.resolved();
         IMethodBinding canonical = resolved == null ? null : resolved.declaration();
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("declaring_type", owner);
@@ -262,7 +260,7 @@ final class SymbolVisitor extends ASTVisitor {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(binding);
         if (resolved == null) {
             unresolved(constructor ? "UNRESOLVED_CONSTRUCTOR_CALL" : "UNRESOLVED_METHOD_CALL", location,
                     text, "Canonical method declaration, owner, or parameters unavailable");
@@ -283,7 +281,7 @@ final class SymbolVisitor extends ASTVisitor {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(binding);
         if (resolved == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference",
                 "Canonical method declaration, owner, or parameters unavailable");
         else {
@@ -293,10 +291,10 @@ final class SymbolVisitor extends ASTVisitor {
         }
     }
 
-    private void addMethodTypeEdges(String source, SymbolIds.ResolvedMethod method) {
+    private void addMethodTypeEdges(String source, CallableIds.ResolvedMethod method) {
         IMethodBinding declaration = method.declaration();
         ITypeBinding returnType = declaration.getReturnType();
-        if (!method.constructor() && SymbolIds.isUsableType(returnType) && !returnType.isPrimitive())
+        if (!method.constructor() && CallableIds.isUsableType(returnType) && !returnType.isPrimitive())
             addTypeEdge(source, returnType, "RETURNS_TYPE", Map.of());
         for (ITypeBinding parameter : method.parameterBindings())
             addTypeEdge(source, parameter, "ACCEPTS_TYPE", Map.of());
@@ -305,7 +303,7 @@ final class SymbolVisitor extends ASTVisitor {
             for (ITypeBinding thrown : exceptions) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
     }
 
-    private void addOverrides(String source, SymbolIds.ResolvedMethod method, ASTNode location) {
+    private void addOverrides(String source, CallableIds.ResolvedMethod method, ASTNode location) {
         ITypeBinding owner = method.owner();
         collectOverridden(source, method, owner.getSuperclass(), location);
         ITypeBinding[] interfaces = owner.getInterfaces();
@@ -313,17 +311,17 @@ final class SymbolVisitor extends ASTVisitor {
             for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
-    private void collectOverridden(String source, SymbolIds.ResolvedMethod method,
+    private void collectOverridden(String source, CallableIds.ResolvedMethod method,
                                    ITypeBinding parent, ASTNode location) {
         if (parent == null) return;
-        if (!SymbolIds.isUsableType(parent)) {
+        if (!CallableIds.isUsableType(parent)) {
             unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
                     "Parent type binding unavailable or incomplete");
             return;
         }
         IMethodBinding[] candidates = parent.getDeclaredMethods();
         if (candidates != null) for (IMethodBinding candidate : candidates) {
-            SymbolIds.ResolvedMethod resolvedCandidate = SymbolIds.resolveMethod(candidate);
+            CallableIds.ResolvedMethod resolvedCandidate = CallableIds.resolve(candidate);
             if (resolvedCandidate == null) {
                 unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
                         "Override candidate binding unavailable or incomplete");
@@ -333,7 +331,7 @@ final class SymbolVisitor extends ASTVisitor {
                 Map<String, Object> metadata = new LinkedHashMap<>();
                 ITypeBinding methodReturn = method.declaration().getReturnType();
                 ITypeBinding candidateReturn = resolvedCandidate.declaration().getReturnType();
-                if (SymbolIds.isUsableType(methodReturn) && SymbolIds.isUsableType(candidateReturn))
+                if (CallableIds.isUsableType(methodReturn) && CallableIds.isUsableType(candidateReturn))
                     metadata.put("covariant_return", !SymbolIds.normalizeType(methodReturn)
                             .equals(SymbolIds.normalizeType(candidateReturn)));
                 graph.edge(edge(source, graph.externalMethod(resolvedCandidate), "OVERRIDES",
@@ -352,7 +350,7 @@ final class SymbolVisitor extends ASTVisitor {
     }
 
     private void addTypeEdge(String source, ITypeBinding target, String kind, Map<String, Object> metadata) {
-        if (!SymbolIds.isUsableType(target) || target.isPrimitive()) return;
+        if (!CallableIds.isUsableType(target) || target.isPrimitive()) return;
         graph.edge(edge(source, graph.externalType(target), kind, "COMPILER_RESOLVED", metadata));
     }
 
@@ -405,11 +403,6 @@ final class SymbolVisitor extends ASTVisitor {
         return values;
     }
 
-    private static String fallbackParameterType(SingleVariableDeclaration parameter) {
-        return parameter.getType() + "[]".repeat(parameter.getExtraDimensions())
-                + (parameter.isVarargs() ? "[]" : "");
-    }
-
     private static boolean isDeclarationName(SimpleName name) {
         ASTNode parent = name.getParent();
         return (parent instanceof VariableDeclarationFragment fragment && fragment.getName() == name)
@@ -442,21 +435,7 @@ final class SymbolVisitor extends ASTVisitor {
         return new ResolvedField(owner, SymbolIds.normalizeType(owner), canonicalName);
     }
 
-    static MethodSymbol resolveMethodSymbol(String lexicalOwner, String lexicalName,
-                                            List<String> fallbackParameters, boolean constructor,
-                                            IMethodBinding binding) {
-        SymbolIds.ResolvedMethod resolved = SymbolIds.resolveMethod(binding);
-        if (resolved == null) {
-            List<String> parameterTypes = fallbackParameters.stream().map(SymbolIds::normalizeTextType).toList();
-            return new MethodSymbol(SymbolIds.fallbackMethod(lexicalOwner, lexicalName,
-                    fallbackParameters, constructor), null, parameterTypes);
-        }
-        return new MethodSymbol(SymbolIds.method(resolved), resolved, resolved.parameterTypes());
-    }
-
     record ResolvedField(ITypeBinding owner, String ownerName, String name) {}
-
-    record MethodSymbol(String id, SymbolIds.ResolvedMethod resolved, List<String> parameterTypes) {}
 
     private record Access(boolean read, boolean write) {}
 }

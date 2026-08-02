@@ -683,6 +683,14 @@ pub enum GraphineError {
     AnalyzerUnavailable,
     #[error("analyzer protocol failed validation")]
     AnalyzerProtocol,
+    #[error(
+        "analyzer protocol failed validation: dangling {edge_kind} edge is missing {endpoint} node {stable_id}"
+    )]
+    AnalyzerProtocolDanglingEdge {
+        endpoint: String,
+        stable_id: String,
+        edge_kind: String,
+    },
     #[error("analyzer timed out")]
     AnalyzerTimeout,
     #[error("analyzer process failed")]
@@ -715,7 +723,9 @@ impl GraphineError {
             Self::Database => "database_error",
             Self::InvalidArgument(_) => "invalid_argument",
             Self::AnalyzerUnavailable => "analyzer_unavailable",
-            Self::AnalyzerProtocol => "analyzer_protocol_error",
+            Self::AnalyzerProtocol | Self::AnalyzerProtocolDanglingEdge { .. } => {
+                "analyzer_protocol_error"
+            }
             Self::AnalyzerTimeout => "analyzer_timeout",
             Self::AnalyzerFailed => "analyzer_failed",
             Self::CapabilityNotSupported => "capability_not_supported",

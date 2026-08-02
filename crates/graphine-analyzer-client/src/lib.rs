@@ -1310,8 +1310,9 @@ mod tests {
         #[cfg(windows)]
         let arguments = vec![
             OsString::from("-NoProfile"),
+            OsString::from("-NonInteractive"),
             OsString::from("-Command"),
-            OsString::from("$input | Out-Null; exit 7"),
+            OsString::from("$null = [Console]::In.ReadToEnd(); exit 7"),
         ];
         #[cfg(not(windows))]
         let arguments = vec![

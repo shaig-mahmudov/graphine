@@ -100,31 +100,36 @@ final class SymbolVisitor extends ASTVisitor {
         IMethodBinding binding = declaration.resolveBinding();
         boolean constructor = declaration.isConstructor();
         List<String> fallbackParameters = declaration.parameters().stream()
-                .map(value -> ((SingleVariableDeclaration) value).getType().toString()
-                        + (((SingleVariableDeclaration) value).isVarargs() ? "[]" : ""))
+                .map(value -> fallbackParameterType((SingleVariableDeclaration) value))
                 .toList();
-        String id = binding == null
-                ? SymbolIds.fallbackMethod(owner.substring("type:".length()), declaration.getName().getIdentifier(), fallbackParameters, constructor)
-                : SymbolIds.method(binding);
+        MethodSymbol method = resolveMethodSymbol(owner.substring("type:".length()),
+                declaration.getName().getIdentifier(), fallbackParameters, constructor, binding);
+        String id = method.id();
+        IMethodBinding canonical = method.binding();
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("declaring_type", owner);
         metadata.put("name", constructor ? "<init>" : declaration.getName().getIdentifier());
-        metadata.put("parameter_types", binding == null ? fallbackParameters : Arrays.stream(binding.getParameterTypes()).map(SymbolIds::normalizeType).toList());
-        metadata.put("return_type", constructor ? "void" : binding == null ? declaration.getReturnType2().toString() : SymbolIds.normalizeType(binding.getReturnType()));
+        metadata.put("parameter_types", method.parameterTypes());
+        metadata.put("return_type", constructor ? "void" : canonical == null
+                ? declaration.getReturnType2().toString() : SymbolIds.normalizeType(canonical.getReturnType()));
         metadata.put("modifiers", Modifier.toString(declaration.getModifiers()));
-        metadata.put("generic_parameters", binding == null ? List.of() : Arrays.stream(binding.getTypeParameters()).map(ITypeBinding::getName).toList());
-        metadata.put("thrown_types", binding == null ? List.of() : Arrays.stream(binding.getExceptionTypes()).map(SymbolIds::normalizeType).toList());
+        metadata.put("generic_parameters", canonical == null ? List.of() : Arrays.stream(canonical.getTypeParameters()).map(ITypeBinding::getName).toList());
+        metadata.put("thrown_types", canonical == null ? List.of() : Arrays.stream(canonical.getExceptionTypes()).map(SymbolIds::normalizeType).toList());
         metadata.put("has_body", declaration.getBody() != null);
         metadata.put("source_set", sourceRoot.sourceSet());
+        String confidence = canonical == null ? "STATIC_INFERRED" : "COMPILER_RESOLVED";
+        String provenance = canonical == null ? "eclipse-jdt-ast" : "eclipse-jdt";
         graph.node(node(id, constructor ? "CONSTRUCTOR" : "METHOD", owner.substring(5) + "#" + declaration.getName(),
-                constructor ? "<init>" : declaration.getName().getIdentifier(), declaration, metadata));
-        graph.edge(edge(owner, id, "DECLARES", binding == null ? "STATIC_INFERRED" : "COMPILER_RESOLVED", Map.of()));
+                constructor ? "<init>" : declaration.getName().getIdentifier(), declaration, metadata,
+                confidence, provenance));
+        graph.edge(edge(owner, id, "DECLARES", confidence, Map.of()));
         methods.push(id);
-        if (binding == null) unresolved("UNRESOLVED_METHOD_DECLARATION", declaration, declaration.getName().getIdentifier(), "Method binding unavailable");
+        if (canonical == null) unresolved("UNRESOLVED_METHOD_DECLARATION", declaration,
+                declaration.getName().getIdentifier(), "Method binding unavailable or incomplete");
         else {
             graph.resolved();
-            addMethodTypeEdges(id, binding);
-            addOverrides(id, binding);
+            addMethodTypeEdges(id, canonical);
+            addOverrides(id, canonical);
         }
         return options.includeMethodBodies() || declaration.getBody() == null;
     }
@@ -319,10 +324,15 @@ final class SymbolVisitor extends ASTVisitor {
 
     private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
                            Map<String, Object> metadata) {
+        return node(id, kind, qualified, simple, location, metadata, "COMPILER_RESOLVED", "eclipse-jdt");
+    }
+
+    private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
+                           Map<String, Object> metadata, String confidence, String provenance) {
         return new GraphNode(id, kind, qualified, simple, sourceRoot.moduleName(), packageName,
                 location == null ? null : JavaProjectAnalyzer.relative(projectRoot, file),
                 location == null ? null : startLine(location), location == null ? null : endLine(location),
-                "COMPILER_RESOLVED", "eclipse-jdt", metadata, List.of());
+                confidence, provenance, metadata, List.of());
     }
 
     private GraphEdge edge(String source, String target, String kind, String confidence, Map<String, Object> metadata) {
@@ -361,6 +371,11 @@ final class SymbolVisitor extends ASTVisitor {
         return values;
     }
 
+    private static String fallbackParameterType(SingleVariableDeclaration parameter) {
+        return parameter.getType() + "[]".repeat(parameter.getExtraDimensions())
+                + (parameter.isVarargs() ? "[]" : "");
+    }
+
     private static boolean isDeclarationName(SimpleName name) {
         ASTNode parent = name.getParent();
         return (parent instanceof VariableDeclarationFragment fragment && fragment.getName() == name)
@@ -393,7 +408,47 @@ final class SymbolVisitor extends ASTVisitor {
         return new ResolvedField(owner, SymbolIds.normalizeType(owner), canonicalName);
     }
 
+    static ResolvedMethod resolveMethodBinding(IMethodBinding binding) {
+        if (binding == null || binding.isRecovered()) return null;
+        IMethodBinding declaration = binding.getMethodDeclaration();
+        if (declaration == null || declaration.isRecovered()) return null;
+        ITypeBinding owner = declaration.getDeclaringClass();
+        String name = declaration.getName();
+        if (!usableType(owner) || name == null || name.isBlank()) return null;
+        ITypeBinding[] parameters = declaration.getParameterTypes();
+        if (parameters == null || Arrays.stream(parameters).anyMatch(parameter -> !usableType(parameter))) return null;
+        return new ResolvedMethod(declaration, SymbolIds.normalizeType(owner), name,
+                Arrays.stream(parameters).map(SymbolIds::normalizeType).toList());
+    }
+
+    static MethodSymbol resolveMethodSymbol(String lexicalOwner, String lexicalName,
+                                            List<String> fallbackParameters, boolean constructor,
+                                            IMethodBinding binding) {
+        ResolvedMethod resolved = resolveMethodBinding(binding);
+        if (resolved == null) {
+            List<String> parameterTypes = fallbackParameters.stream().map(SymbolIds::normalizeTextType).toList();
+            return new MethodSymbol(SymbolIds.fallbackMethod(lexicalOwner, lexicalName,
+                    fallbackParameters, constructor), null, parameterTypes);
+        }
+        return new MethodSymbol(SymbolIds.method(resolved.binding()), resolved.binding(), resolved.parameterTypes());
+    }
+
+    private static boolean usableType(ITypeBinding binding) {
+        if (binding == null || binding.isRecovered()) return false;
+        if (binding.isArray()) return binding.getDimensions() > 0 && usableType(binding.getElementType());
+        ITypeBinding normalized = binding.isPrimitive() ? binding : binding.getErasure();
+        if (normalized == null || normalized.isRecovered()) return false;
+        String name = normalized.getQualifiedName();
+        if (name == null || name.isBlank()) name = normalized.getName();
+        return name != null && !name.isBlank();
+    }
+
     record ResolvedField(ITypeBinding owner, String ownerName, String name) {}
+
+    record ResolvedMethod(IMethodBinding binding, String ownerName, String name,
+                          List<String> parameterTypes) {}
+
+    record MethodSymbol(String id, IMethodBinding binding, List<String> parameterTypes) {}
 
     private record Access(boolean read, boolean write) {}
 }

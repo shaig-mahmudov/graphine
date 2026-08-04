@@ -42,6 +42,12 @@ final class GraphCollector implements GraphSink {
         bindingsUnresolved++;
     }
 
+    /**
+     * Records an external type represented by the binding.
+     *
+     * @param binding the type binding to record
+     * @return the type symbol ID, or {@code null} when the binding is {@code null}
+     */
     String externalType(ITypeBinding binding) {
         if (binding == null) return null;
         String id = SymbolIds.type(binding);
@@ -54,6 +60,12 @@ final class GraphCollector implements GraphSink {
         return id;
     }
 
+    /**
+     * Records an external method or constructor and its declaring type.
+     *
+     * @param method the resolved method or constructor to record
+     * @return the method symbol ID, or {@code null} if {@code method} is {@code null}
+     */
     String externalMethod(CallableIds.ResolvedMethod method) {
         if (method == null) return null;
         ITypeBinding ownerBinding = method.owner();

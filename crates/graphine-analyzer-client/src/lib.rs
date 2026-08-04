@@ -870,6 +870,25 @@ impl EventCollector {
         Ok(())
     }
 
+    /// Finalizes the collected analyzer events into a raw analysis result.
+    ///
+    /// Validates that the event stream is complete, its emitted counts match the
+    /// collected nodes and edges, and every edge references existing nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an analyzer protocol error when required data is missing or counts
+    /// do not match. Returns a dangling-edge error when an edge references a
+    /// missing source or target node.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(collector: EventCollector) -> Result<RawAnalysis, GraphineError> {
+    /// let analysis = collector.finish()?;
+    /// # Ok(analysis)
+    /// # }
+    /// ```
     fn finish(self) -> Result<RawAnalysis, GraphineError> {
         let summary = self.summary.ok_or(GraphineError::AnalyzerProtocol)?;
         if summary.nodes_emitted != self.nodes.len() as u64

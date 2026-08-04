@@ -706,6 +706,18 @@ pub enum GraphineError {
 }
 
 impl GraphineError {
+    /// Returns the stable error code associated with this error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = GraphineError::ProjectNotFound;
+    /// assert_eq!(error.code(), "project_not_found");
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The stable string code for the error variant.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {

@@ -95,6 +95,12 @@ final class SymbolVisitor extends ASTVisitor {
         return true;
     }
 
+    /**
+     * Visits a method or constructor declaration, records its symbol and metadata, and adds its relationships to the graph.
+     *
+     * @param declaration the method or constructor declaration to process
+     * @return {@code true} if method-body traversal is enabled or the declaration has no body; {@code false} otherwise
+     */
     @Override public boolean visit(MethodDeclaration declaration) {
         String owner = types.peek();
         if (owner == null) return true;
@@ -256,6 +262,14 @@ final class SymbolVisitor extends ASTVisitor {
         return true;
     }
 
+    /**
+     * Records a compiler-resolved method or constructor call from the current method.
+     *
+     * @param binding     the method binding for the call
+     * @param location    the source location of the call
+     * @param text        the source text associated with the call
+     * @param constructor whether the call invokes a constructor
+     */
     private void call(IMethodBinding binding, ASTNode location, String text, boolean constructor) {
         String source = methods.peek();
         if (source == null) return;
@@ -303,6 +317,13 @@ final class SymbolVisitor extends ASTVisitor {
             for (ITypeBinding thrown : exceptions) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
     }
 
+    /**
+     * Records methods overridden by the specified method in its superclass and implemented interfaces.
+     *
+     * @param source   the source file containing the method
+     * @param method   the resolved method whose overrides are analyzed
+     * @param location the AST location associated with the method
+     */
     private void addOverrides(String source, CallableIds.ResolvedMethod method, ASTNode location) {
         ITypeBinding owner = method.owner();
         collectOverridden(source, method, owner.getSuperclass(), location);
@@ -311,6 +332,14 @@ final class SymbolVisitor extends ASTVisitor {
             for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
+    /**
+     * Records resolved methods overridden by the specified method across a type's superclass and interfaces.
+     *
+     * @param source   the source identifier for the declaring method
+     * @param method   the resolved method being analyzed
+     * @param parent   the type whose declared and inherited relationships are examined
+     * @param location the AST location associated with unresolved override diagnostics
+     */
     private void collectOverridden(String source, CallableIds.ResolvedMethod method,
                                    ITypeBinding parent, ASTNode location) {
         if (parent == null) return;
@@ -345,20 +374,59 @@ final class SymbolVisitor extends ASTVisitor {
             for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
+    /**
+     * Adds a type relationship when the target resolves to a type other than {@code java.lang.Object}.
+     *
+     * @param source the source type identifier
+     * @param target the target type binding
+     * @param kind   the relationship kind
+     */
     private void addTypeRelation(String source, ITypeBinding target, String kind) {
         if (target != null && !"java.lang.Object".equals(SymbolIds.normalizeType(target))) addTypeEdge(source, target, kind, Map.of());
     }
 
+    /**
+     * Adds a compiler-resolved edge from a source symbol to a usable reference type.
+     *
+     * @param source   the source symbol identifier
+     * @param target   the referenced type
+     * @param kind     the relationship kind
+     * @param metadata metadata associated with the edge
+     */
     private void addTypeEdge(String source, ITypeBinding target, String kind, Map<String, Object> metadata) {
         if (!CallableIds.isUsableType(target) || target.isPrimitive()) return;
         graph.edge(edge(source, graph.externalType(target), kind, "COMPILER_RESOLVED", metadata));
     }
 
+    /**
+     * Creates a graph node using compiler-resolved provenance metadata.
+     *
+     * @param id         the node identifier
+     * @param kind       the node kind
+     * @param qualified  the qualified node name
+     * @param simple     the simple node name
+     * @param location   the AST location associated with the node
+     * @param metadata   additional node metadata
+     * @return           the created graph node
+     */
     private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
                            Map<String, Object> metadata) {
         return node(id, kind, qualified, simple, location, metadata, "COMPILER_RESOLVED", "eclipse-jdt");
     }
 
+    /**
+     * Creates a graph node with source location, module, package, metadata, confidence, and provenance information.
+     *
+     * @param id         the node identifier
+     * @param kind       the node kind
+     * @param qualified  the qualified name
+     * @param simple     the simple name
+     * @param location   the AST location associated with the node
+     * @param metadata   the node metadata
+     * @param confidence the confidence level for the node
+     * @param provenance the source provenance for the node
+     * @return           the graph node populated with the specified information
+     */
     private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
                            Map<String, Object> metadata, String confidence, String provenance) {
         return new GraphNode(id, kind, qualified, simple, sourceRoot.moduleName(), packageName,
@@ -367,6 +435,16 @@ final class SymbolVisitor extends ASTVisitor {
                 confidence, provenance, metadata, List.of());
     }
 
+    /**
+     * Creates a graph edge with the specified endpoints, kind, confidence, and metadata.
+     *
+     * @param source     the source node identifier
+     * @param target     the target node identifier
+     * @param kind       the edge kind
+     * @param confidence the confidence level for the edge
+     * @param metadata   additional edge metadata
+     * @return the configured graph edge
+     */
     private GraphEdge edge(String source, String target, String kind, String confidence, Map<String, Object> metadata) {
         return new GraphEdge(source, target, kind, confidence, "eclipse-jdt-binding", metadata);
     }

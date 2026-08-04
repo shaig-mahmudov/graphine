@@ -405,6 +405,11 @@ public final class SpringSemanticAnalyzer {
         return repositories;
     }
 
+    /**
+     * Adds framework-provided repository methods and their declaration edges to the graph.
+     *
+     * @param repository the repository whose inherited methods are emitted
+     */
     private void emitInheritedRepositoryMethods(GraphSink graph, RepositoryInfo repository) {
         List<FrameworkMethod> methods = List.of(
                 new FrameworkMethod("save", List.of(repository.domain), repository.domain, "WRITE"),
@@ -745,6 +750,13 @@ public final class SpringSemanticAnalyzer {
         @Override public boolean visit(AnnotationTypeDeclaration node) { return enterType(node, node.resolveBinding()); }
         @Override public void endVisit(AnnotationTypeDeclaration node) { typeStack.pop(); }
 
+        /**
+         * Registers a type declaration and prepares it for nested AST traversal.
+         *
+         * @param declaration the type declaration to register
+         * @param binding the resolved type binding, or {@code null} when unavailable
+         * @return {@code true} after the type has been registered
+         */
         private boolean enterType(AbstractTypeDeclaration declaration, ITypeBinding binding) {
             String simpleName = declaration.getName().getIdentifier();
             String lexicalName = typeStack.isEmpty() ? (packageName.isBlank() ? simpleName : packageName + "." + simpleName)
@@ -796,6 +808,12 @@ public final class SpringSemanticAnalyzer {
                 owner.bindingInterfaces.add(new InterfaceInfo(name, arguments));
         }
 
+        /**
+         * Collects a method or constructor declaration and records its parameters, metadata, return type, and simple factory implementation type.
+         *
+         * @param declaration the method or constructor declaration to collect
+         * @return true to continue traversing the declaration
+         */
         @Override public boolean visit(MethodDeclaration declaration) {
             if (typeStack.isEmpty()) return true;
             IMethodBinding binding = declaration.resolveBinding();
@@ -953,6 +971,12 @@ public final class SpringSemanticAnalyzer {
         collectInterfaces(binding.getSuperclass(), result, seen);
     }
 
+    /**
+     * Normalizes a type binding to its qualified source-style name.
+     *
+     * @param binding the type binding to normalize
+     * @return the normalized type name, including array dimensions, or {@code null} if the binding is {@code null}
+     */
     private static String normalize(ITypeBinding binding) {
         if (binding == null) return null;
         if (binding.isArray()) return normalize(binding.getElementType()) + "[]".repeat(binding.getDimensions());
@@ -966,16 +990,46 @@ public final class SpringSemanticAnalyzer {
         String value = normalize(binding); return value == null || value.isBlank() ? fallback.replaceAll("\\s+", "") : value;
     }
 
+    /**
+     * Determines the element type of a single-parameter container type.
+     *
+     * @param type the type to inspect
+     * @return the normalized element type when the type is a supported container with one type argument; otherwise, {@code null}
+     */
     private static String containerElement(ITypeBinding type) {
         if (type == null || type.getTypeArguments().length != 1) return null;
         String raw = normalize(type);
         return isContainer(raw) ? normalize(type.getTypeArguments()[0]) : null;
     }
 
-    static boolean isContainer(String type) { return type != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection", "java.util.Optional", "org.springframework.beans.factory.ObjectProvider", "jakarta.inject.Provider").contains(type); }
-    static boolean isCollection(ITypeBinding type) { String raw = normalize(type); return raw != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection").contains(raw); }
-    static boolean isOptional(ITypeBinding type) { String raw = normalize(type); return raw != null && ("java.util.Optional".equals(raw) || "org.springframework.beans.factory.ObjectProvider".equals(raw) || "jakarta.inject.Provider".equals(raw)); }
+    /**
+ * Determines whether a type represents a supported container or provider.
+ *
+ * @param type the fully qualified type name
+ * @return {@code true} if the type is a supported container or provider, {@code false} otherwise
+ */
+static boolean isContainer(String type) { return type != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection", "java.util.Optional", "org.springframework.beans.factory.ObjectProvider", "jakarta.inject.Provider").contains(type); }
+    /**
+ * Determines whether a type represents a supported collection type.
+ *
+ * @param type the type to examine
+ * @return {@code true} if the type is a list, set, or collection, {@code false} otherwise
+ */
+static boolean isCollection(ITypeBinding type) { String raw = normalize(type); return raw != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection").contains(raw); }
+    /**
+ * Determines whether a type represents an optional or provider-style dependency.
+ *
+ * @param type the type to inspect
+ * @return {@code true} if the type is {@code Optional}, {@code ObjectProvider}, or {@code Provider}; {@code false} otherwise
+ */
+static boolean isOptional(ITypeBinding type) { String raw = normalize(type); return raw != null && ("java.util.Optional".equals(raw) || "org.springframework.beans.factory.ObjectProvider".equals(raw) || "jakarta.inject.Provider".equals(raw)); }
 
+    /**
+     * Determines whether a node occurs within a conditional or lambda expression context.
+     *
+     * @param node the node to inspect
+     * @return {@code true} if an enclosing conditional statement, conditional expression, or lambda expression is found; {@code false} otherwise
+     */
     private static boolean isConditional(ASTNode node) {
         for (ASTNode parent = node.getParent(); parent != null; parent = parent.getParent())
             if (parent instanceof IfStatement || parent instanceof ConditionalExpression || parent instanceof LambdaExpression) return true;
@@ -999,16 +1053,54 @@ public final class SpringSemanticAnalyzer {
     }
 
     private static List<String> nonEmpty(List<String> first, List<String> second) { return first.isEmpty() ? second : first; }
+    /**
+     * Combines path segments into a normalized path with a single leading slash.
+     *
+     * @param prefix the first path segment
+     * @param suffix the second path segment
+     * @return the normalized path without a trailing slash, except for the root path
+     */
     private static String normalizePath(String prefix, String suffix) {
         String path = ("/" + Optional.ofNullable(prefix).orElse("") + "/" + Optional.ofNullable(suffix).orElse(""))
                 .replaceAll("/+", "/");
         return path.length() > 1 && path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
     }
-    private static String firstNonBlank(String... values) { for (String value : values) if (value != null && !value.isBlank()) return value; return null; }
-    private static String simpleName(String value) { return value.substring(value.lastIndexOf('.') + 1); }
-    private static String kebab(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT); }
-    private static String camelToUpperSnake(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT); }
-    private static String bounded(String value, int limit) { return value == null ? null : value.length() <= limit ? value : value.substring(0, limit); }
+    /**
+ * Selects the first non-blank value from the provided values.
+ *
+ * @param values candidate values to inspect
+ * @return the first non-blank value, or {@code null} if none is available
+ */
+private static String firstNonBlank(String... values) { for (String value : values) if (value != null && !value.isBlank()) return value; return null; }
+    /**
+ * Extracts the final segment from a dot-delimited name.
+ *
+ * @param value the dot-delimited name
+ * @return the substring after the final dot
+ */
+private static String simpleName(String value) { return value.substring(value.lastIndexOf('.') + 1); }
+    /**
+ * Converts camelCase text to lowercase kebab-case.
+ *
+ * @param value the text to convert
+ * @return the converted text
+ */
+private static String kebab(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT); }
+    /**
+ * Converts a camel-case string to uppercase snake case.
+ *
+ * @param value the camel-case string to convert
+ * @return the uppercase snake-case representation
+ */
+private static String camelToUpperSnake(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT); }
+    /**
+ * Restricts a string to the specified maximum length.
+ *
+ * @param value the string to limit
+ * @param limit the maximum number of characters
+ * @return the original string if it fits within the limit, the truncated string otherwise, or {@code null} if the value is {@code null}
+ */
+private static String bounded(String value, int limit) { return value == null ? null : value.length() <= limit ? value : value.substring(0, limit); }
 
     private static Map<String, Object> mapOf(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();

@@ -143,6 +143,7 @@ public final class CallableIds {
      * @return the normalized textual type
      */
     public static String normalizeTextType(String value) {
+        if (value == null || value.isBlank()) return "<unresolved>";
         return value.replace("...", "[]").replaceAll("\\s+", "").replace('$', '.');
     }
 

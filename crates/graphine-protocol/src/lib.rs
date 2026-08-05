@@ -711,6 +711,7 @@ impl GraphineError {
     /// # Examples
     ///
     /// ```
+    /// # use graphine_protocol::GraphineError;
     /// let error = GraphineError::ProjectNotFound;
     /// assert_eq!(error.code(), "project_not_found");
     /// ```

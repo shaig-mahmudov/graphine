@@ -1,49 +1,63 @@
 package dev.graphine.analyzer.java;
 
-import java.util.Arrays;
-import java.util.stream.Collectors;
-import org.eclipse.jdt.core.dom.IMethodBinding;
+import dev.graphine.analyzer.jdt.CallableIds;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 
 public final class SymbolIds {
     private SymbolIds() {}
 
+    /**
+     * Creates a normalized identifier for a type binding.
+     *
+     * @param binding the type binding to identify
+     * @return the type identifier
+     */
     public static String type(ITypeBinding binding) {
         return "type:" + normalizeType(binding);
     }
 
-    public static String method(IMethodBinding binding) {
-        IMethodBinding declaration = binding.getMethodDeclaration();
-        String owner = normalizeType(declaration.getDeclaringClass());
-        String parameters = Arrays.stream(declaration.getParameterTypes())
-                .map(SymbolIds::normalizeType).collect(Collectors.joining(","));
-        String prefix = declaration.isConstructor() ? "constructor:" : "method:";
-        String name = declaration.isConstructor() ? "<init>" : declaration.getName();
-        return prefix + owner + "#" + name + "(" + parameters + ")";
+    /**
+     * Creates an identifier for a resolved method.
+     *
+     * @param method the resolved method to identify
+     * @return the method identifier
+     */
+    public static String method(CallableIds.ResolvedMethod method) {
+        return CallableIds.id(method);
     }
 
+    /**
+     * Creates a normalized identifier for a field.
+     *
+     * @param owner the identifier of the field's declaring type
+     * @param name  the field name
+     * @return      the field identifier
+     */
     public static String field(String owner, String name) {
         return "field:" + owner + "#" + name;
     }
 
+    /**
+     * Normalizes a type binding into its identifier representation.
+     *
+     * @param binding the type binding to normalize
+     * @return the normalized type identifier
+     */
     public static String normalizeType(ITypeBinding binding) {
-        if (binding == null) return "<unresolved>";
-        if (binding.isArray()) return normalizeType(binding.getElementType()) + "[]".repeat(binding.getDimensions());
-        ITypeBinding normalized = binding.isPrimitive() ? binding : binding.getErasure();
-        String name = normalized.getQualifiedName();
-        if (name == null || name.isBlank()) name = normalized.getName();
-        return name.replace('$', '.');
+        return CallableIds.normalizeType(binding);
     }
 
+    /**
+     * Generates a fallback identifier for a method or constructor.
+     *
+     * @param owner       the identifier of the declaring type
+     * @param name        the method or constructor name
+     * @param parameters  the parameter type identifiers
+     * @param constructor whether the symbol represents a constructor
+     * @return the generated fallback method identifier
+     */
     public static String fallbackMethod(String owner, String name, java.util.List<String> parameters,
                                         boolean constructor) {
-        String normalized = parameters.stream().map(SymbolIds::normalizeTextType)
-                .collect(Collectors.joining(","));
-        return (constructor ? "constructor:" : "method:") + owner + "#"
-                + (constructor ? "<init>" : name) + "(" + normalized + ")";
-    }
-
-    static String normalizeTextType(String value) {
-        return value.replace("...", "[]").replaceAll("\\s+", "").replace('$', '.');
+        return CallableIds.fallback(owner, name, parameters, constructor);
     }
 }

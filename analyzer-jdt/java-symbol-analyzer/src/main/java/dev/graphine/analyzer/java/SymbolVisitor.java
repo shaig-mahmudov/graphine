@@ -5,6 +5,7 @@ import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.EdgeOccurrence;
 import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
+import dev.graphine.analyzer.jdt.CallableIds;
 import dev.graphine.analyzer.resolver.SourceRoot;
 import java.lang.reflect.Modifier;
 import java.nio.file.Path;
@@ -94,37 +95,46 @@ final class SymbolVisitor extends ASTVisitor {
         return true;
     }
 
+    /**
+     * Visits a method or constructor declaration, records its symbol and metadata, and adds its relationships to the graph.
+     *
+     * @param declaration the method or constructor declaration to process
+     * @return {@code true} if method-body traversal is enabled or the declaration has no body; {@code false} otherwise
+     */
     @Override public boolean visit(MethodDeclaration declaration) {
         String owner = types.peek();
         if (owner == null) return true;
         IMethodBinding binding = declaration.resolveBinding();
         boolean constructor = declaration.isConstructor();
-        List<String> fallbackParameters = declaration.parameters().stream()
-                .map(value -> ((SingleVariableDeclaration) value).getType().toString()
-                        + (((SingleVariableDeclaration) value).isVarargs() ? "[]" : ""))
-                .toList();
-        String id = binding == null
-                ? SymbolIds.fallbackMethod(owner.substring("type:".length()), declaration.getName().getIdentifier(), fallbackParameters, constructor)
-                : SymbolIds.method(binding);
+        CallableIds.CallableSymbol method = CallableIds.forDeclaration(binding,
+                owner.substring("type:".length()), declaration);
+        String id = method.id();
+        CallableIds.ResolvedMethod resolved = method.resolved();
+        IMethodBinding canonical = resolved == null ? null : resolved.declaration();
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("declaring_type", owner);
         metadata.put("name", constructor ? "<init>" : declaration.getName().getIdentifier());
-        metadata.put("parameter_types", binding == null ? fallbackParameters : Arrays.stream(binding.getParameterTypes()).map(SymbolIds::normalizeType).toList());
-        metadata.put("return_type", constructor ? "void" : binding == null ? declaration.getReturnType2().toString() : SymbolIds.normalizeType(binding.getReturnType()));
+        metadata.put("parameter_types", method.parameterTypes());
+        metadata.put("return_type", constructor ? "void" : canonical == null
+                ? declaration.getReturnType2().toString() : SymbolIds.normalizeType(canonical.getReturnType()));
         metadata.put("modifiers", Modifier.toString(declaration.getModifiers()));
-        metadata.put("generic_parameters", binding == null ? List.of() : Arrays.stream(binding.getTypeParameters()).map(ITypeBinding::getName).toList());
-        metadata.put("thrown_types", binding == null ? List.of() : Arrays.stream(binding.getExceptionTypes()).map(SymbolIds::normalizeType).toList());
+        metadata.put("generic_parameters", canonical == null ? List.of() : Arrays.stream(canonical.getTypeParameters()).map(ITypeBinding::getName).toList());
+        metadata.put("thrown_types", canonical == null ? List.of() : Arrays.stream(canonical.getExceptionTypes()).map(SymbolIds::normalizeType).toList());
         metadata.put("has_body", declaration.getBody() != null);
         metadata.put("source_set", sourceRoot.sourceSet());
+        String confidence = canonical == null ? "STATIC_INFERRED" : "COMPILER_RESOLVED";
+        String provenance = canonical == null ? "eclipse-jdt-ast" : "eclipse-jdt";
         graph.node(node(id, constructor ? "CONSTRUCTOR" : "METHOD", owner.substring(5) + "#" + declaration.getName(),
-                constructor ? "<init>" : declaration.getName().getIdentifier(), declaration, metadata));
-        graph.edge(edge(owner, id, "DECLARES", binding == null ? "STATIC_INFERRED" : "COMPILER_RESOLVED", Map.of()));
+                constructor ? "<init>" : declaration.getName().getIdentifier(), declaration, metadata,
+                confidence, provenance));
+        graph.edge(edge(owner, id, "DECLARES", confidence, Map.of()));
         methods.push(id);
-        if (binding == null) unresolved("UNRESOLVED_METHOD_DECLARATION", declaration, declaration.getName().getIdentifier(), "Method binding unavailable");
+        if (canonical == null) unresolved("UNRESOLVED_METHOD_DECLARATION", declaration,
+                declaration.getName().getIdentifier(), "Method binding unavailable or incomplete");
         else {
             graph.resolved();
-            addMethodTypeEdges(id, binding);
-            addOverrides(id, binding);
+            addMethodTypeEdges(id, resolved);
+            addOverrides(id, resolved, declaration);
         }
         return options.includeMethodBodies() || declaration.getBody() == null;
     }
@@ -252,19 +262,29 @@ final class SymbolVisitor extends ASTVisitor {
         return true;
     }
 
+    /**
+     * Records a compiler-resolved method or constructor call from the current method.
+     *
+     * @param binding     the method binding for the call
+     * @param location    the source location of the call
+     * @param text        the source text associated with the call
+     * @param constructor whether the call invokes a constructor
+     */
     private void call(IMethodBinding binding, ASTNode location, String text, boolean constructor) {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        if (binding == null) {
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(binding);
+        if (resolved == null) {
             unresolved(constructor ? "UNRESOLVED_CONSTRUCTOR_CALL" : "UNRESOLVED_METHOD_CALL", location,
-                    text, "Declaring type or callable unavailable on classpath");
+                    text, "Canonical method declaration, owner, or parameters unavailable");
             return;
         }
-        String target = graph.externalMethod(binding);
-        String dispatch = binding.isConstructor() || Modifier.isStatic(binding.getModifiers())
-                || Modifier.isPrivate(binding.getModifiers()) || Modifier.isFinal(binding.getModifiers())
-                || Modifier.isFinal(binding.getDeclaringClass().getModifiers())
+        IMethodBinding canonical = resolved.declaration();
+        String target = graph.externalMethod(resolved);
+        String dispatch = resolved.constructor() || Modifier.isStatic(canonical.getModifiers())
+                || Modifier.isPrivate(canonical.getModifiers()) || Modifier.isFinal(canonical.getModifiers())
+                || Modifier.isFinal(resolved.owner().getModifiers())
                 ? "exactly_resolved" : "virtual_declared_target";
         graph.edge(edgeAt(source, target, constructor ? "CONSTRUCTS" : "CALLS",
                 "COMPILER_RESOLVED", Map.of("dispatch", dispatch), location));
@@ -275,56 +295,156 @@ final class SymbolVisitor extends ASTVisitor {
         String source = methods.peek();
         if (source == null) return;
         if (ambiguousLines.contains(startLine(location))) return;
-        if (binding == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference", "Target binding unavailable");
+        CallableIds.ResolvedMethod resolved = CallableIds.resolve(binding);
+        if (resolved == null) unresolved("UNRESOLVED_METHOD_REFERENCE", location, "method reference",
+                "Canonical method declaration, owner, or parameters unavailable");
         else {
-            graph.edge(edgeAt(source, graph.externalMethod(binding), binding.isConstructor() ? "CONSTRUCTS" : "CALLS",
+            graph.edge(edgeAt(source, graph.externalMethod(resolved), resolved.constructor() ? "CONSTRUCTS" : "CALLS",
                     "COMPILER_RESOLVED", Map.of("method_reference", true, "runtime_execution", "not_proven"), location));
             graph.resolved();
         }
     }
 
-    private void addMethodTypeEdges(String source, IMethodBinding binding) {
-        if (!binding.isConstructor() && !binding.getReturnType().isPrimitive())
-            addTypeEdge(source, binding.getReturnType(), "RETURNS_TYPE", Map.of());
-        for (ITypeBinding parameter : binding.getParameterTypes()) addTypeEdge(source, parameter, "ACCEPTS_TYPE", Map.of());
-        for (ITypeBinding thrown : binding.getExceptionTypes()) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
+    private void addMethodTypeEdges(String source, CallableIds.ResolvedMethod method) {
+        IMethodBinding declaration = method.declaration();
+        ITypeBinding returnType = declaration.getReturnType();
+        if (!method.constructor() && CallableIds.isUsableType(returnType) && !returnType.isPrimitive())
+            addTypeEdge(source, returnType, "RETURNS_TYPE", Map.of());
+        for (ITypeBinding parameter : method.parameterBindings())
+            addTypeEdge(source, parameter, "ACCEPTS_TYPE", Map.of());
+        ITypeBinding[] exceptions = declaration.getExceptionTypes();
+        if (exceptions != null)
+            for (ITypeBinding thrown : exceptions) addTypeEdge(source, thrown, "THROWS_TYPE", Map.of());
     }
 
-    private void addOverrides(String source, IMethodBinding binding) {
-        collectOverridden(source, binding, binding.getDeclaringClass().getSuperclass());
-        for (ITypeBinding iface : binding.getDeclaringClass().getInterfaces()) collectOverridden(source, binding, iface);
+    /**
+     * Records methods overridden by the specified method in its superclass and implemented interfaces.
+     *
+     * @param source   the source file containing the method
+     * @param method   the resolved method whose overrides are analyzed
+     * @param location the AST location associated with the method
+     */
+    private void addOverrides(String source, CallableIds.ResolvedMethod method, ASTNode location) {
+        ITypeBinding owner = method.owner();
+        collectOverridden(source, method, owner.getSuperclass(), location);
+        ITypeBinding[] interfaces = owner.getInterfaces();
+        if (interfaces != null)
+            for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
-    private void collectOverridden(String source, IMethodBinding method, ITypeBinding parent) {
+    /**
+     * Records resolved methods overridden by the specified method across a type's superclass and interfaces.
+     *
+     * @param source   the source identifier for the declaring method
+     * @param method   the resolved method being analyzed
+     * @param parent   the type whose declared and inherited relationships are examined
+     * @param location the AST location associated with unresolved override diagnostics
+     */
+    private void collectOverridden(String source, CallableIds.ResolvedMethod method,
+                                   ITypeBinding parent, ASTNode location) {
         if (parent == null) return;
-        for (IMethodBinding candidate : parent.getDeclaredMethods()) {
-            if (method.overrides(candidate)) {
-                graph.edge(edge(source, graph.externalMethod(candidate), "OVERRIDES", "COMPILER_RESOLVED",
-                        Map.of("covariant_return", !SymbolIds.normalizeType(method.getReturnType()).equals(SymbolIds.normalizeType(candidate.getReturnType())))));
+        if (!CallableIds.isUsableType(parent)) {
+            unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
+                    "Parent type binding unavailable or incomplete");
+            return;
+        }
+        IMethodBinding[] candidates = parent.getDeclaredMethods();
+        if (candidates != null) for (IMethodBinding candidate : candidates) {
+            CallableIds.ResolvedMethod resolvedCandidate = CallableIds.resolve(candidate);
+            if (resolvedCandidate == null) {
+                unresolved("UNRESOLVED_OVERRIDE_TARGET", location, method.name(),
+                        "Override candidate binding unavailable or incomplete");
+                continue;
+            }
+            if (method.declaration().overrides(resolvedCandidate.declaration())) {
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                ITypeBinding methodReturn = method.declaration().getReturnType();
+                ITypeBinding candidateReturn = resolvedCandidate.declaration().getReturnType();
+                if (CallableIds.isUsableType(methodReturn) && CallableIds.isUsableType(candidateReturn))
+                    metadata.put("covariant_return", !SymbolIds.normalizeType(methodReturn)
+                            .equals(SymbolIds.normalizeType(candidateReturn)));
+                graph.edge(edge(source, graph.externalMethod(resolvedCandidate), "OVERRIDES",
+                        "COMPILER_RESOLVED", metadata));
                 graph.resolved();
             }
         }
-        collectOverridden(source, method, parent.getSuperclass());
-        for (ITypeBinding iface : parent.getInterfaces()) collectOverridden(source, method, iface);
+        collectOverridden(source, method, parent.getSuperclass(), location);
+        ITypeBinding[] interfaces = parent.getInterfaces();
+        if (interfaces != null)
+            for (ITypeBinding iface : interfaces) collectOverridden(source, method, iface, location);
     }
 
+    /**
+     * Adds a type relationship when the target resolves to a type other than {@code java.lang.Object}.
+     *
+     * @param source the source type identifier
+     * @param target the target type binding
+     * @param kind   the relationship kind
+     */
     private void addTypeRelation(String source, ITypeBinding target, String kind) {
         if (target != null && !"java.lang.Object".equals(SymbolIds.normalizeType(target))) addTypeEdge(source, target, kind, Map.of());
     }
 
+    /**
+     * Adds a compiler-resolved edge from a source symbol to a usable reference type.
+     *
+     * @param source   the source symbol identifier
+     * @param target   the referenced type
+     * @param kind     the relationship kind
+     * @param metadata metadata associated with the edge
+     */
     private void addTypeEdge(String source, ITypeBinding target, String kind, Map<String, Object> metadata) {
-        if (target == null || target.isPrimitive()) return;
+        if (!CallableIds.isUsableType(target) || target.isPrimitive()) return;
         graph.edge(edge(source, graph.externalType(target), kind, "COMPILER_RESOLVED", metadata));
     }
 
+    /**
+     * Creates a graph node using compiler-resolved provenance metadata.
+     *
+     * @param id         the node identifier
+     * @param kind       the node kind
+     * @param qualified  the qualified node name
+     * @param simple     the simple node name
+     * @param location   the AST location associated with the node
+     * @param metadata   additional node metadata
+     * @return           the created graph node
+     */
     private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
                            Map<String, Object> metadata) {
+        return node(id, kind, qualified, simple, location, metadata, "COMPILER_RESOLVED", "eclipse-jdt");
+    }
+
+    /**
+     * Creates a graph node with source location, module, package, metadata, confidence, and provenance information.
+     *
+     * @param id         the node identifier
+     * @param kind       the node kind
+     * @param qualified  the qualified name
+     * @param simple     the simple name
+     * @param location   the AST location associated with the node
+     * @param metadata   the node metadata
+     * @param confidence the confidence level for the node
+     * @param provenance the source provenance for the node
+     * @return           the graph node populated with the specified information
+     */
+    private GraphNode node(String id, String kind, String qualified, String simple, ASTNode location,
+                           Map<String, Object> metadata, String confidence, String provenance) {
         return new GraphNode(id, kind, qualified, simple, sourceRoot.moduleName(), packageName,
                 location == null ? null : JavaProjectAnalyzer.relative(projectRoot, file),
                 location == null ? null : startLine(location), location == null ? null : endLine(location),
-                "COMPILER_RESOLVED", "eclipse-jdt", metadata, List.of());
+                confidence, provenance, metadata, List.of());
     }
 
+    /**
+     * Creates a graph edge with the specified endpoints, kind, confidence, and metadata.
+     *
+     * @param source     the source node identifier
+     * @param target     the target node identifier
+     * @param kind       the edge kind
+     * @param confidence the confidence level for the edge
+     * @param metadata   additional edge metadata
+     * @return the configured graph edge
+     */
     private GraphEdge edge(String source, String target, String kind, String confidence, Map<String, Object> metadata) {
         return new GraphEdge(source, target, kind, confidence, "eclipse-jdt-binding", metadata);
     }

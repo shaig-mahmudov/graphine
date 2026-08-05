@@ -16,6 +16,8 @@ import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -162,6 +164,80 @@ final class JavaProjectAnalyzerTest {
         assertTrue(output.toString().contains("bean:greetingService"));
         assertTrue(output.toString().contains("\"kind\":\"SELECTED_BEAN\""));
         assertFalse(output.toString().contains("RUNTIME_CONFIRMED"));
+    }
+
+    @Test
+    void recovered_bean_factory_bindings_share_core_ids_and_leave_no_dangling_edges() throws Exception {
+        Path sourceRoot = Files.createDirectories(root.resolve("recovered-spring/src/main/java"));
+        write(sourceRoot, "org/springframework/context/annotation/Configuration.java", """
+                package org.springframework.context.annotation;
+                public @interface Configuration {}
+                """);
+        write(sourceRoot, "org/springframework/context/annotation/Bean.java", """
+                package org.springframework.context.annotation;
+                public @interface Bean { String[] value() default {}; String[] name() default {}; }
+                """);
+        write(sourceRoot, "org/springframework/context/event/EventListener.java", """
+                package org.springframework.context.event;
+                public @interface EventListener {}
+                """);
+        write(sourceRoot, "sample/StorageConfiguration.java", """
+                package sample;
+                import org.springframework.context.annotation.Bean;
+                import org.springframework.context.annotation.Configuration;
+                import org.springframework.context.event.EventListener;
+                import org.springframework.web.socket.messaging.SessionConnectedEvent;
+                @Configuration
+                class StorageConfiguration {
+                    Object callback = new Object() {
+                        void accept(MissingCallbackType value) {}
+                    };
+                    @Bean S3Client s3Client(StorageProperties properties) { return null; }
+                    @Bean S3Presigner s3Presigner(S3Client client) { return null; }
+                    @EventListener
+                    void connected(SessionConnectedEvent event) {}
+                }
+                """);
+        Path project = root.resolve("recovered-spring");
+        ProjectModel model = new ProjectModel(project, List.of(project),
+                List.of(new SourceRoot(sourceRoot, "main", "recovered-spring", project)),
+                List.of(), "17", "test", 0);
+        AnalysisRequest request = new AnalysisRequest(2, "recovered-spring", "analyze_project", project,
+                AnalyzerMode.safe, List.of("main"), new AnalyzerOptions(true, true, false, List.of()),
+                Path.of("mvn"), 10_000);
+        ObjectMapper mapper = new ObjectMapper();
+        StringWriter output = new StringWriter();
+
+        AnalysisResult result = new JavaProjectAnalyzer().analyze(model, request,
+                new ProtocolWriter(mapper, output));
+        List<JsonNode> events = output.toString().lines().map(line -> {
+            try { return mapper.readTree(line); }
+            catch (Exception error) { throw new IllegalStateException(error); }
+        }).toList();
+        Set<String> nodes = events.stream().map(event -> event.path("stable_id").asText())
+                .filter(id -> !id.isBlank()).collect(Collectors.toSet());
+        List<JsonNode> edges = events.stream().filter(event -> !event.path("source").asText().isBlank()).toList();
+        String clientFactory = "method:sample.StorageConfiguration#s3Client(StorageProperties)";
+        String presignerFactory = "method:sample.StorageConfiguration#s3Presigner(S3Client)";
+        String listener = "method:sample.StorageConfiguration#connected(SessionConnectedEvent)";
+        String externalEvent = "type:org.springframework.web.socket.messaging.SessionConnectedEvent";
+
+        assertEquals("complete", result.status());
+        assertTrue(edges.stream().allMatch(edge -> nodes.contains(edge.path("source").asText())),
+                "every edge source must be emitted as a node");
+        assertTrue(edges.stream().allMatch(edge -> nodes.contains(edge.path("target").asText())),
+                "every edge target must be emitted as a node");
+        assertFalse(nodes.stream().anyMatch(id -> id.startsWith("method:#") || id.startsWith("constructor:#")));
+        assertTrue(hasNode(events, clientFactory));
+        assertTrue(hasNode(events, presignerFactory));
+        assertTrue(hasEdge(events, clientFactory, "bean:s3Client", "DECLARES_BEAN"));
+        assertTrue(hasEdge(events, presignerFactory, "bean:s3Presigner", "DECLARES_BEAN"));
+        assertTrue(hasEdge(events, presignerFactory, "bean:s3Client", "BEAN_CANDIDATE"));
+        assertTrue(hasEdge(events, presignerFactory, "bean:s3Client", "SELECTED_BEAN"));
+        assertTrue(hasEdge(events, "bean:s3Presigner", "bean:s3Client", "INJECTS"));
+        assertTrue(hasNode(events, externalEvent), "missing external event node from " + nodes);
+        assertTrue(hasEdge(events, listener, externalEvent, "LISTENS_TO_EVENT"),
+                "missing listener edge from " + edges);
     }
 
     private static void write(Path root, String relative, String contents) throws Exception {

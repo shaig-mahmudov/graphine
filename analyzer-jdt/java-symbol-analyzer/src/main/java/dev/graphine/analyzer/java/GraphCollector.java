@@ -5,6 +5,7 @@ import dev.graphine.analyzer.protocol.GraphEdge;
 import dev.graphine.analyzer.protocol.GraphNode;
 import dev.graphine.analyzer.protocol.GraphSink;
 import dev.graphine.analyzer.protocol.ProtocolWriter;
+import dev.graphine.analyzer.jdt.CallableIds;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -13,7 +14,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 
 final class GraphCollector implements GraphSink {
@@ -42,6 +42,12 @@ final class GraphCollector implements GraphSink {
         bindingsUnresolved++;
     }
 
+    /**
+     * Records an external type represented by the binding.
+     *
+     * @param binding the type binding to record
+     * @return the type symbol ID, or {@code null} when the binding is {@code null}
+     */
     String externalType(ITypeBinding binding) {
         if (binding == null) return null;
         String id = SymbolIds.type(binding);
@@ -54,14 +60,21 @@ final class GraphCollector implements GraphSink {
         return id;
     }
 
-    String externalMethod(IMethodBinding binding) {
-        if (binding == null) return null;
-        String owner = externalType(binding.getDeclaringClass());
-        String id = SymbolIds.method(binding);
-        node(new GraphNode(id, binding.isConstructor() ? "CONSTRUCTOR" : "METHOD",
-                SymbolIds.normalizeType(binding.getDeclaringClass()) + "#" + binding.getName(),
-                binding.isConstructor() ? "<init>" : binding.getName(), null,
-                binding.getDeclaringClass().getPackage() == null ? null : binding.getDeclaringClass().getPackage().getName(),
+    /**
+     * Records an external method or constructor and its declaring type.
+     *
+     * @param method the resolved method or constructor to record
+     * @return the method symbol ID, or {@code null} if {@code method} is {@code null}
+     */
+    String externalMethod(CallableIds.ResolvedMethod method) {
+        if (method == null) return null;
+        ITypeBinding ownerBinding = method.owner();
+        String owner = externalType(ownerBinding);
+        String id = SymbolIds.method(method);
+        node(new GraphNode(id, method.constructor() ? "CONSTRUCTOR" : "METHOD",
+                method.ownerName() + "#" + method.name(),
+                method.constructor() ? "<init>" : method.name(), null,
+                ownerBinding.getPackage() == null ? null : ownerBinding.getPackage().getName(),
                 null, null, null, "COMPILER_RESOLVED", "eclipse-jdt-binding",
                 Map.of("external", true, "declaring_type", owner), List.of()));
         return id;

@@ -1,5 +1,6 @@
 package dev.graphine.analyzer.spring;
 
+import dev.graphine.analyzer.jdt.CallableIds;
 import dev.graphine.analyzer.protocol.Diagnostic;
 import dev.graphine.analyzer.protocol.EdgeOccurrence;
 import dev.graphine.analyzer.protocol.GraphEdge;
@@ -404,6 +405,11 @@ public final class SpringSemanticAnalyzer {
         return repositories;
     }
 
+    /**
+     * Adds framework-provided repository methods and their declaration edges to the graph.
+     *
+     * @param repository the repository whose inherited methods are emitted
+     */
     private void emitInheritedRepositoryMethods(GraphSink graph, RepositoryInfo repository) {
         List<FrameworkMethod> methods = List.of(
                 new FrameworkMethod("save", List.of(repository.domain), repository.domain, "WRITE"),
@@ -413,7 +419,7 @@ public final class SpringSemanticAnalyzer {
                 new FrameworkMethod("existsById", List.of(repository.idType), "boolean", "READ"),
                 new FrameworkMethod("count", List.of(), "long", "READ"));
         for (FrameworkMethod method : methods) {
-            String id = methodId(repository.type.qualifiedName, method.name, method.parameters, false);
+            String id = CallableIds.fallback(repository.type.qualifiedName, method.name, method.parameters, false);
             graph.node(node(id, "METHOD", repository.type.qualifiedName + "#" + method.name,
                     method.name, repository.type.location, "FRAMEWORK_RESOLVED", mapOf(
                             "declaring_type", repository.type.id, "parameter_types", method.parameters,
@@ -545,18 +551,32 @@ public final class SpringSemanticAnalyzer {
             if (method.annotations.containsKey("org.springframework.context.event.EventListener")
                     && !method.parameters.isEmpty()) {
                 String eventType = method.parameters.get(0).type;
+                if (eventType == null || eventType.isBlank()) {
+                    diagnostics.add(diagnostic("UNRESOLVED_EVENT_TYPE", method.location, method.name,
+                            "Event listener parameter type is unavailable"));
+                    continue;
+                }
                 TypeInfo event = types.get(eventType);
                 if (event != null) graph.node(semanticTypeNode(event, "EVENT_TYPE", "FRAMEWORK_RESOLVED",
                         Map.of("listener_count", 1)));
+                else graph.node(node("type:" + eventType, "EVENT_TYPE", eventType, simpleName(eventType), null,
+                        "STATIC_INFERRED", Map.of("external", true, "listener_count", 1)));
                 graph.edge(edge(method.id, "type:" + eventType, "LISTENS_TO_EVENT", "FRAMEWORK_RESOLVED",
                         mapOf("async", method.annotations.containsKey("org.springframework.scheduling.annotation.Async"),
                                 "runtime_delivery", "not_confirmed"), method.location));
             }
         }
         for (CallInfo call : calls) if ("org.springframework.context.ApplicationEventPublisher".equals(call.receiverType)
-                && "publishEvent".equals(call.methodName) && call.argumentType != null) {
+                && "publishEvent".equals(call.methodName)) {
+            if (call.argumentType == null || call.argumentType.isBlank()) {
+                diagnostics.add(diagnostic("UNRESOLVED_EVENT_TYPE", call.location, call.methodName,
+                        "Event publisher argument type is unavailable"));
+                continue;
+            }
             TypeInfo event = types.get(call.argumentType);
             if (event != null) graph.node(semanticTypeNode(event, "EVENT_TYPE", "FRAMEWORK_RESOLVED", Map.of()));
+            else graph.node(node("type:" + call.argumentType, "EVENT_TYPE", call.argumentType,
+                    simpleName(call.argumentType), null, "STATIC_INFERRED", Map.of("external", true)));
             graph.edge(edge(call.sourceMethod, "type:" + call.argumentType, "PUBLISHES_EVENT",
                     "FRAMEWORK_RESOLVED", Map.of("runtime_delivery", "not_confirmed"), call.location));
         }
@@ -735,9 +755,18 @@ public final class SpringSemanticAnalyzer {
         @Override public boolean visit(AnnotationTypeDeclaration node) { return enterType(node, node.resolveBinding()); }
         @Override public void endVisit(AnnotationTypeDeclaration node) { typeStack.pop(); }
 
+        /**
+         * Registers a type declaration and prepares it for nested AST traversal.
+         *
+         * @param declaration the type declaration to register
+         * @param binding the resolved type binding, or {@code null} when unavailable
+         * @return {@code true} after the type has been registered
+         */
         private boolean enterType(AbstractTypeDeclaration declaration, ITypeBinding binding) {
-            String qualified = binding == null ? (packageName.isBlank() ? declaration.getName().getIdentifier()
-                    : packageName + "." + declaration.getName().getIdentifier()) : normalize(binding);
+            String simpleName = declaration.getName().getIdentifier();
+            String lexicalName = typeStack.isEmpty() ? (packageName.isBlank() ? simpleName : packageName + "." + simpleName)
+                    : typeStack.peek().qualifiedName + "." + simpleName;
+            String qualified = binding == null ? lexicalName : normalize(binding);
             TypeInfo type = new TypeInfo("type:" + qualified, qualified, declaration.getName().getIdentifier(),
                     packageName, sourceRoot.moduleName(), location(declaration), annotations(declaration.modifiers()),
                     binding != null && binding.isInterface());
@@ -765,7 +794,7 @@ public final class SpringSemanticAnalyzer {
                             isCollection(componentType), isOptional(componentType),
                             annotations(component.modifiers()), location(component)));
                 }
-                type.methods.add(new MethodInfo(methodId(qualified, "<init>",
+                type.methods.add(new MethodInfo(CallableIds.fallback(qualified, "<init>",
                         components.stream().map(parameter -> parameter.type).toList(), true), "<init>", true,
                         "void", components, Map.of(), location(record), true));
             }
@@ -784,6 +813,12 @@ public final class SpringSemanticAnalyzer {
                 owner.bindingInterfaces.add(new InterfaceInfo(name, arguments));
         }
 
+        /**
+         * Collects a method or constructor declaration and records its parameters, metadata, return type, and simple factory implementation type.
+         *
+         * @param declaration the method or constructor declaration to collect
+         * @return true to continue traversing the declaration
+         */
         @Override public boolean visit(MethodDeclaration declaration) {
             if (typeStack.isEmpty()) return true;
             IMethodBinding binding = declaration.resolveBinding();
@@ -796,9 +831,12 @@ public final class SpringSemanticAnalyzer {
                 parameters.add(new ParameterInfo(parameter.getName().getIdentifier(), typeName(type, parameter.getType().toString()),
                         containerElement(type), isCollection(type), isOptional(type), annotations(parameter.modifiers()), location(parameter)));
             }
-            String id = binding == null ? methodId(typeStack.peek().qualifiedName, declaration.getName().getIdentifier(),
-                    parameters.stream().map(parameter -> parameter.type).toList(), constructor) : methodId(binding);
-            String returnType = constructor ? "void" : typeName(binding == null ? declaration.getReturnType2().resolveBinding() : binding.getReturnType(),
+            CallableIds.CallableSymbol callable = CallableIds.forDeclaration(binding,
+                    typeStack.peek().qualifiedName, declaration);
+            String id = callable.id();
+            IMethodBinding canonical = callable.resolved() == null ? null : callable.resolved().declaration();
+            String returnType = constructor ? "void" : typeName(canonical == null
+                            ? declaration.getReturnType2().resolveBinding() : canonical.getReturnType(),
                     declaration.getReturnType2() == null ? "void" : declaration.getReturnType2().toString());
             MethodInfo method = new MethodInfo(id, declaration.getName().getIdentifier(), constructor, returnType,
                     parameters, annotations(declaration.modifiers()), location(declaration), false);
@@ -829,11 +867,12 @@ public final class SpringSemanticAnalyzer {
         @Override public boolean visit(MethodInvocation invocation) {
             if (methodStack.isEmpty()) return true;
             IMethodBinding binding = invocation.resolveMethodBinding();
+            CallableIds.ResolvedMethod resolved = CallableIds.resolve(binding);
             ITypeBinding receiver = invocation.getExpression() == null
-                    ? (binding == null ? null : binding.getDeclaringClass()) : invocation.getExpression().resolveTypeBinding();
+                    ? (resolved == null ? null : resolved.owner()) : invocation.getExpression().resolveTypeBinding();
             ITypeBinding argument = invocation.arguments().isEmpty() ? null : ((Expression) invocation.arguments().get(0)).resolveTypeBinding();
             calls.add(new CallInfo(methodStack.peek().id, typeName(receiver, null), invocation.getName().getIdentifier(),
-                    typeName(argument, null), binding == null ? Map.of() : bindingAnnotations(binding), location(invocation),
+                    typeName(argument, null), resolved == null ? Map.of() : bindingAnnotations(resolved.declaration()), location(invocation),
                     isConditional(invocation)));
             return true;
         }
@@ -937,17 +976,12 @@ public final class SpringSemanticAnalyzer {
         collectInterfaces(binding.getSuperclass(), result, seen);
     }
 
-    private static String methodId(IMethodBinding binding) {
-        IMethodBinding declaration = binding.getMethodDeclaration();
-        return methodId(normalize(declaration.getDeclaringClass()), declaration.getName(),
-                Arrays.stream(declaration.getParameterTypes()).map(SpringSemanticAnalyzer::normalize).toList(), declaration.isConstructor());
-    }
-
-    private static String methodId(String owner, String name, List<String> parameters, boolean constructor) {
-        return (constructor ? "constructor:" : "method:") + owner + "#" + (constructor ? "<init>" : name)
-                + "(" + String.join(",", parameters) + ")";
-    }
-
+    /**
+     * Normalizes a type binding to its qualified source-style name.
+     *
+     * @param binding the type binding to normalize
+     * @return the normalized type name, including array dimensions, or {@code null} if the binding is {@code null}
+     */
     private static String normalize(ITypeBinding binding) {
         if (binding == null) return null;
         if (binding.isArray()) return normalize(binding.getElementType()) + "[]".repeat(binding.getDimensions());
@@ -961,16 +995,69 @@ public final class SpringSemanticAnalyzer {
         String value = normalize(binding); return value == null || value.isBlank() ? fallback.replaceAll("\\s+", "") : value;
     }
 
+    /**
+     * Determines the element type of a single-parameter container type.
+     *
+     * @param type the type to inspect
+     * @return the normalized element type when the type is a supported container with one type argument; otherwise, {@code null}
+     */
     private static String containerElement(ITypeBinding type) {
         if (type == null || type.getTypeArguments().length != 1) return null;
         String raw = normalize(type);
         return isContainer(raw) ? normalize(type.getTypeArguments()[0]) : null;
     }
 
-    private static boolean isContainer(String type) { return Set.of("java.util.List", "java.util.Set", "java.util.Collection", "java.util.Optional", "org.springframework.beans.factory.ObjectProvider", "jakarta.inject.Provider").contains(type); }
-    private static boolean isCollection(ITypeBinding type) { String raw = normalize(type); return Set.of("java.util.List", "java.util.Set", "java.util.Collection").contains(raw); }
-    private static boolean isOptional(ITypeBinding type) { String raw = normalize(type); return "java.util.Optional".equals(raw) || "org.springframework.beans.factory.ObjectProvider".equals(raw) || "jakarta.inject.Provider".equals(raw); }
+    /**
+     * Determines whether a type represents a supported container or provider.
+     *
+     * @param type the fully qualified type name
+     * @return {@code true} if the type is a supported container or provider, {@code false} otherwise
+     */
+    static boolean isContainer(String type) {
+        return type != null && Set.of(
+                "java.util.List",
+                "java.util.Set",
+                "java.util.Collection",
+                "java.util.Optional",
+                "org.springframework.beans.factory.ObjectProvider",
+                "jakarta.inject.Provider"
+        ).contains(type);
+    }
 
+    /**
+     * Determines whether a type represents a supported collection type.
+     *
+     * @param type the type to examine
+     * @return {@code true} if the type is a list, set, or collection, {@code false} otherwise
+     */
+    static boolean isCollection(ITypeBinding type) {
+        String raw = normalize(type);
+        return raw != null && Set.of(
+                "java.util.List",
+                "java.util.Set",
+                "java.util.Collection"
+        ).contains(raw);
+    }
+
+    /**
+     * Determines whether a type represents an optional or provider-style dependency.
+     *
+     * @param type the type to inspect
+     * @return {@code true} if the type is {@code Optional}, {@code ObjectProvider}, or {@code Provider}; {@code false} otherwise
+     */
+    static boolean isOptional(ITypeBinding type) {
+        String raw = normalize(type);
+        return raw != null && ("java.util.Optional".equals(raw)
+                || "org.springframework.beans.factory.ObjectProvider".equals(raw)
+                || "jakarta.inject.Provider".equals(raw));
+    }
+
+    /**
+     * Determines whether a node occurs within a conditional or lambda expression context.
+     *
+     * @param node the node to inspect
+     * @return {@code true} if an enclosing conditional statement, conditional expression, or lambda expression is found; {@code false} otherwise
+     */
     private static boolean isConditional(ASTNode node) {
         for (ASTNode parent = node.getParent(); parent != null; parent = parent.getParent())
             if (parent instanceof IfStatement || parent instanceof ConditionalExpression || parent instanceof LambdaExpression) return true;
@@ -994,15 +1081,73 @@ public final class SpringSemanticAnalyzer {
     }
 
     private static List<String> nonEmpty(List<String> first, List<String> second) { return first.isEmpty() ? second : first; }
+    /**
+     * Combines path segments into a normalized path with a single leading slash.
+     *
+     * @param prefix the first path segment
+     * @param suffix the second path segment
+     * @return the normalized path without a trailing slash, except for the root path
+     */
     private static String normalizePath(String prefix, String suffix) {
         String path = ("/" + Optional.ofNullable(prefix).orElse("") + "/" + Optional.ofNullable(suffix).orElse(""))
                 .replaceAll("/+", "/");
         return path.length() > 1 && path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
     }
-    private static String firstNonBlank(String... values) { for (String value : values) if (value != null && !value.isBlank()) return value; return null; }
-    private static String kebab(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT); }
-    private static String camelToUpperSnake(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT); }
-    private static String bounded(String value, int limit) { return value == null ? null : value.length() <= limit ? value : value.substring(0, limit); }
+    /**
+     * Selects the first non-blank value from the provided values.
+     *
+     * @param values candidate values to inspect
+     * @return the first non-blank value, or {@code null} if none is available
+     */
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Extracts the final segment from a dot-delimited name.
+     *
+     * @param value the dot-delimited name
+     * @return the substring after the final dot
+     */
+    private static String simpleName(String value) {
+        return value.substring(value.lastIndexOf('.') + 1);
+    }
+
+    /**
+     * Converts camelCase text to lowercase kebab-case.
+     *
+     * @param value the text to convert
+     * @return the converted text
+     */
+    private static String kebab(String value) {
+        return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Converts a camel-case string to uppercase snake case.
+     *
+     * @param value the camel-case string to convert
+     * @return the uppercase snake-case representation
+     */
+    private static String camelToUpperSnake(String value) {
+        return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Restricts a string to the specified maximum length.
+     *
+     * @param value the string to limit
+     * @param limit the maximum number of characters
+     * @return the original string if it fits within the limit, the truncated string otherwise, or {@code null} if the value is {@code null}
+     */
+    private static String bounded(String value, int limit) {
+        return value == null ? null : value.length() <= limit ? value : value.substring(0, limit);
+    }
 
     private static Map<String, Object> mapOf(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();

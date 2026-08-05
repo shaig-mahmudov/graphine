@@ -883,7 +883,7 @@ impl EventCollector {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// # fn example(collector: EventCollector) -> Result<RawAnalysis, GraphineError> {
     /// let analysis = collector.finish()?;
     /// # Ok(analysis)

@@ -1,5 +1,6 @@
 **/target/
-/.graphine/
-/.graphine-demo/
-/.graphine-phase2/
+/.graphine*/
 /dist/
+/test-data/
+/themis-*.json
+**/%SystemDrive%/

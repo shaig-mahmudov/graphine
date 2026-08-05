@@ -567,7 +567,12 @@ public final class SpringSemanticAnalyzer {
             }
         }
         for (CallInfo call : calls) if ("org.springframework.context.ApplicationEventPublisher".equals(call.receiverType)
-                && "publishEvent".equals(call.methodName) && call.argumentType != null) {
+                && "publishEvent".equals(call.methodName)) {
+            if (call.argumentType == null || call.argumentType.isBlank()) {
+                diagnostics.add(diagnostic("UNRESOLVED_EVENT_TYPE", call.location, call.methodName,
+                        "Event publisher argument type is unavailable"));
+                continue;
+            }
             TypeInfo event = types.get(call.argumentType);
             if (event != null) graph.node(semanticTypeNode(event, "EVENT_TYPE", "FRAMEWORK_RESOLVED", Map.of()));
             else graph.node(node("type:" + call.argumentType, "EVENT_TYPE", call.argumentType,
@@ -1003,26 +1008,49 @@ public final class SpringSemanticAnalyzer {
     }
 
     /**
- * Determines whether a type represents a supported container or provider.
- *
- * @param type the fully qualified type name
- * @return {@code true} if the type is a supported container or provider, {@code false} otherwise
- */
-static boolean isContainer(String type) { return type != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection", "java.util.Optional", "org.springframework.beans.factory.ObjectProvider", "jakarta.inject.Provider").contains(type); }
+     * Determines whether a type represents a supported container or provider.
+     *
+     * @param type the fully qualified type name
+     * @return {@code true} if the type is a supported container or provider, {@code false} otherwise
+     */
+    static boolean isContainer(String type) {
+        return type != null && Set.of(
+                "java.util.List",
+                "java.util.Set",
+                "java.util.Collection",
+                "java.util.Optional",
+                "org.springframework.beans.factory.ObjectProvider",
+                "jakarta.inject.Provider"
+        ).contains(type);
+    }
+
     /**
- * Determines whether a type represents a supported collection type.
- *
- * @param type the type to examine
- * @return {@code true} if the type is a list, set, or collection, {@code false} otherwise
- */
-static boolean isCollection(ITypeBinding type) { String raw = normalize(type); return raw != null && Set.of("java.util.List", "java.util.Set", "java.util.Collection").contains(raw); }
+     * Determines whether a type represents a supported collection type.
+     *
+     * @param type the type to examine
+     * @return {@code true} if the type is a list, set, or collection, {@code false} otherwise
+     */
+    static boolean isCollection(ITypeBinding type) {
+        String raw = normalize(type);
+        return raw != null && Set.of(
+                "java.util.List",
+                "java.util.Set",
+                "java.util.Collection"
+        ).contains(raw);
+    }
+
     /**
- * Determines whether a type represents an optional or provider-style dependency.
- *
- * @param type the type to inspect
- * @return {@code true} if the type is {@code Optional}, {@code ObjectProvider}, or {@code Provider}; {@code false} otherwise
- */
-static boolean isOptional(ITypeBinding type) { String raw = normalize(type); return raw != null && ("java.util.Optional".equals(raw) || "org.springframework.beans.factory.ObjectProvider".equals(raw) || "jakarta.inject.Provider".equals(raw)); }
+     * Determines whether a type represents an optional or provider-style dependency.
+     *
+     * @param type the type to inspect
+     * @return {@code true} if the type is {@code Optional}, {@code ObjectProvider}, or {@code Provider}; {@code false} otherwise
+     */
+    static boolean isOptional(ITypeBinding type) {
+        String raw = normalize(type);
+        return raw != null && ("java.util.Optional".equals(raw)
+                || "org.springframework.beans.factory.ObjectProvider".equals(raw)
+                || "jakarta.inject.Provider".equals(raw));
+    }
 
     /**
      * Determines whether a node occurs within a conditional or lambda expression context.
@@ -1066,41 +1094,60 @@ static boolean isOptional(ITypeBinding type) { String raw = normalize(type); ret
         return path.length() > 1 && path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
     }
     /**
- * Selects the first non-blank value from the provided values.
- *
- * @param values candidate values to inspect
- * @return the first non-blank value, or {@code null} if none is available
- */
-private static String firstNonBlank(String... values) { for (String value : values) if (value != null && !value.isBlank()) return value; return null; }
+     * Selects the first non-blank value from the provided values.
+     *
+     * @param values candidate values to inspect
+     * @return the first non-blank value, or {@code null} if none is available
+     */
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     /**
- * Extracts the final segment from a dot-delimited name.
- *
- * @param value the dot-delimited name
- * @return the substring after the final dot
- */
-private static String simpleName(String value) { return value.substring(value.lastIndexOf('.') + 1); }
+     * Extracts the final segment from a dot-delimited name.
+     *
+     * @param value the dot-delimited name
+     * @return the substring after the final dot
+     */
+    private static String simpleName(String value) {
+        return value.substring(value.lastIndexOf('.') + 1);
+    }
+
     /**
- * Converts camelCase text to lowercase kebab-case.
- *
- * @param value the text to convert
- * @return the converted text
- */
-private static String kebab(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT); }
+     * Converts camelCase text to lowercase kebab-case.
+     *
+     * @param value the text to convert
+     * @return the converted text
+     */
+    private static String kebab(String value) {
+        return value.replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT);
+    }
+
     /**
- * Converts a camel-case string to uppercase snake case.
- *
- * @param value the camel-case string to convert
- * @return the uppercase snake-case representation
- */
-private static String camelToUpperSnake(String value) { return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT); }
+     * Converts a camel-case string to uppercase snake case.
+     *
+     * @param value the camel-case string to convert
+     * @return the uppercase snake-case representation
+     */
+    private static String camelToUpperSnake(String value) {
+        return value.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toUpperCase(Locale.ROOT);
+    }
+
     /**
- * Restricts a string to the specified maximum length.
- *
- * @param value the string to limit
- * @param limit the maximum number of characters
- * @return the original string if it fits within the limit, the truncated string otherwise, or {@code null} if the value is {@code null}
- */
-private static String bounded(String value, int limit) { return value == null ? null : value.length() <= limit ? value : value.substring(0, limit); }
+     * Restricts a string to the specified maximum length.
+     *
+     * @param value the string to limit
+     * @param limit the maximum number of characters
+     * @return the original string if it fits within the limit, the truncated string otherwise, or {@code null} if the value is {@code null}
+     */
+    private static String bounded(String value, int limit) {
+        return value == null ? null : value.length() <= limit ? value : value.substring(0, limit);
+    }
 
     private static Map<String, Object> mapOf(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();
